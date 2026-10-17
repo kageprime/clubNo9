@@ -50,54 +50,61 @@ export function makeCanvasTex(
   return t;
 }
 
-// 1. High-Resolution Oak Floor Planks (1024x1024)
+// 1. High-Resolution Clean Warm Oak Floor Planks (1024x1024) - Silky smooth, no noise/Moiré
 export function woodPlankTex(seed = 101, repeat: [number, number] = [6, 6]): THREE.CanvasTexture {
   return makeCanvasTex(
     1024,
     1024,
     (g, w, h) => {
       const r = mulberry32(seed);
-      g.fillStyle = '#4a2c16';
+      // Warm dark walnut underbed
+      g.fillStyle = '#2a170d';
       g.fillRect(0, 0, w, h);
       const planks = 8;
       const ph = h / planks;
       for (let row = 0; row < planks; row++) {
         const y0 = row * ph;
-        const tone = 0.9 + r() * 0.22;
-        const R = Math.round(112 * tone);
-        const G = Math.round(72 * tone);
-        const B = Math.round(42 * tone);
+        const tone = 0.94 + r() * 0.12;
+        const R = Math.round(136 * tone);
+        const G = Math.round(88 * tone);
+        const B = Math.round(52 * tone);
 
-        // Plank base wood gradient
+        // Plank base wood gradient (soft satin finish)
         const pGrad = g.createLinearGradient(0, y0, 0, y0 + ph);
-        pGrad.addColorStop(0, `rgb(${Math.round(R * 1.08)},${Math.round(G * 1.08)},${Math.round(B * 1.08)})`);
+        pGrad.addColorStop(0, `rgb(${Math.round(R * 1.05)},${Math.round(G * 1.05)},${Math.round(B * 1.05)})`);
         pGrad.addColorStop(0.5, `rgb(${R},${G},${B})`);
-        pGrad.addColorStop(1, `rgb(${Math.round(R * 0.88)},${Math.round(G * 0.88)},${Math.round(B * 0.88)})`);
+        pGrad.addColorStop(1, `rgb(${Math.round(R * 0.92)},${Math.round(G * 0.92)},${Math.round(B * 0.92)})`);
         g.fillStyle = pGrad;
-        g.fillRect(0, y0 + 1, w, ph - 3);
+        g.fillRect(0, y0 + 1.5, w, ph - 3);
 
-        // Fine grain lines
-        for (let i = 0; i < 90; i++) {
-          const gy = y0 + 2 + r() * (ph - 6);
-          const gh = 1 + r() * 1.5;
-          const ga = 0.05 + r() * 0.12;
-          g.fillStyle = r() > 0.5 ? `rgba(28,14,5,${ga})` : `rgba(240,200,150,${ga * 0.6})`;
-          g.fillRect(r() * w, gy, 80 + r() * 320, gh);
+        // Soft, organic flowing grain ribbons (bezier curves with low opacity, no noisy scanlines)
+        for (let i = 0; i < 14; i++) {
+          const gy = y0 + 4 + r() * (ph - 8);
+          g.strokeStyle = r() > 0.5 ? 'rgba(45, 24, 12, 0.08)' : 'rgba(235, 195, 145, 0.06)';
+          g.lineWidth = 1.5 + r() * 2.5;
+          g.beginPath();
+          g.moveTo(0, gy);
+          const cp1x = w * 0.33;
+          const cp1y = gy + (r() - 0.5) * 8;
+          const cp2x = w * 0.66;
+          const cp2y = gy + (r() - 0.5) * 8;
+          g.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, w, gy);
+          g.stroke();
         }
 
-        // Deep groove joint between planks
-        g.fillStyle = '#180c05';
-        g.fillRect(0, y0 + ph - 2, w, 2.5);
-        g.fillStyle = 'rgba(255,255,255,0.08)';
-        g.fillRect(0, y0, w, 1);
+        // Clean micro-bevel and shadow between planks
+        g.fillStyle = 'rgba(18, 9, 4, 0.75)';
+        g.fillRect(0, y0 + ph - 2, w, 2);
+        g.fillStyle = 'rgba(255, 235, 205, 0.12)';
+        g.fillRect(0, y0 + 1, w, 1);
 
-        // Vertical plank seams
-        const joints = [w * 0.25 + (r() - 0.5) * 80, w * 0.75 + (r() - 0.5) * 80];
+        // Staggered vertical plank joints with clean bevels
+        const joints = [w * 0.35 + (r() - 0.5) * 60, w * 0.8 + (r() - 0.5) * 60];
         joints.forEach((jx) => {
-          g.fillStyle = '#180c05';
-          g.fillRect(jx, y0, 2.5, ph - 2);
-          g.fillStyle = 'rgba(255,255,255,0.06)';
-          g.fillRect(jx + 2.5, y0, 1, ph - 2);
+          g.fillStyle = 'rgba(18, 9, 4, 0.8)';
+          g.fillRect(jx, y0 + 1.5, 2, ph - 3);
+          g.fillStyle = 'rgba(255, 235, 205, 0.1)';
+          g.fillRect(jx + 2, y0 + 1.5, 1, ph - 3);
         });
       }
     },
@@ -105,7 +112,7 @@ export function woodPlankTex(seed = 101, repeat: [number, number] = [6, 6]): THR
   );
 }
 
-// 2. High-Resolution Walnut Rail & Furniture Trim (512x512)
+// 2. High-Resolution Polished Walnut & Cherry Architectural Wood (512x512) - Smooth satin grain
 export function walnutTrimTex(
   base: [number, number, number] = [88, 52, 28],
   seed = 7,
@@ -116,41 +123,143 @@ export function walnutTrimTex(
     512,
     (g, w, h) => {
       const r = mulberry32(seed);
-      g.fillStyle = `rgb(${base[0]},${base[1]},${base[2]})`;
+      // Soft vertical wood tone gradient
+      const bgGrad = g.createLinearGradient(0, 0, w, 0);
+      bgGrad.addColorStop(0, `rgb(${base[0]},${base[1]},${base[2]})`);
+      bgGrad.addColorStop(0.5, `rgb(${Math.round(base[0] * 1.1)},${Math.round(base[1] * 1.1)},${Math.round(base[2] * 1.1)})`);
+      bgGrad.addColorStop(1, `rgb(${Math.round(base[0] * 0.92)},${Math.round(base[1] * 0.92)},${Math.round(base[2] * 0.92)})`);
+      g.fillStyle = bgGrad;
       g.fillRect(0, 0, w, h);
 
-      for (let y = 0; y < h; y += 3) {
-        const k = 0.8 + r() * 0.35;
-        const a = r() < 0.2 ? 0.35 : 0.12;
-        g.fillStyle = `rgba(${Math.round(base[0] * k * 0.6)},${Math.round(base[1] * k * 0.6)},${Math.round(base[2] * k * 0.6)},${a})`;
-        g.fillRect(0, y, w, 2.5);
+      // Smooth, broad satin grain ribbons
+      for (let i = 0; i < 22; i++) {
+        const x = r() * w;
+        g.strokeStyle = `rgba(28, 14, 6, ${0.05 + r() * 0.08})`;
+        g.lineWidth = 2 + r() * 4;
+        g.beginPath();
+        g.moveTo(x, 0);
+        g.bezierCurveTo(x + (r() - 0.5) * 25, h * 0.35, x + (r() - 0.5) * 25, h * 0.65, x + (r() - 0.5) * 15, h);
+        g.stroke();
       }
 
-      // Satin grain swirls
-      for (let i = 0; i < 40; i++) {
-        g.strokeStyle = `rgba(24,12,6,${0.08 + r() * 0.1})`;
-        g.lineWidth = 1 + r() * 2;
+      // Soft lustrous sheen highlight
+      const sheen = g.createLinearGradient(0, 0, 0, h);
+      sheen.addColorStop(0, 'rgba(255, 235, 205, 0.08)');
+      sheen.addColorStop(0.5, 'rgba(255, 255, 255, 0)');
+      sheen.addColorStop(1, 'rgba(10, 5, 2, 0.12)');
+      g.fillStyle = sheen;
+      g.fillRect(0, 0, w, h);
+    },
+    { repeat },
+  );
+}
+
+// 2b. Classic English Club Wainscot Wood Panel (512x512) - Recessed Picture-Frame Paneling
+export function wainscotPanelTex(seed = 44, repeat: [number, number] = [3, 1]): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    512,
+    (g, w, h) => {
+      // Base dark mahogany panel
+      const baseGrad = g.createLinearGradient(0, 0, 0, h);
+      baseGrad.addColorStop(0, '#3a1f11');
+      baseGrad.addColorStop(0.5, '#452615');
+      baseGrad.addColorStop(1, '#2c170c');
+      g.fillStyle = baseGrad;
+      g.fillRect(0, 0, w, h);
+
+      // Recessed molding frame
+      const padX = 24;
+      const padY = 28;
+      const fw = w - padX * 2;
+      const fh = h - padY * 2;
+
+      // Outer raised lip
+      g.fillStyle = '#221108';
+      g.fillRect(padX - 4, padY - 4, fw + 8, fh + 8);
+      g.fillStyle = '#5a331c';
+      g.fillRect(padX - 2, padY - 2, fw + 4, 3);
+      g.fillRect(padX - 2, padY - 2, 3, fh + 4);
+
+      // Recessed interior field
+      const fieldGrad = g.createLinearGradient(0, padY, 0, padY + fh);
+      fieldGrad.addColorStop(0, '#341c10');
+      fieldGrad.addColorStop(0.5, '#3e2213');
+      fieldGrad.addColorStop(1, '#27140b');
+      g.fillStyle = fieldGrad;
+      g.fillRect(padX, padY, fw, fh);
+
+      // Inner bevel highlight / shadow
+      g.fillStyle = 'rgba(255, 220, 180, 0.1)';
+      g.fillRect(padX, padY + fh - 2, fw, 2);
+      g.fillRect(padX + fw - 2, padY, 2, fh);
+
+      g.fillStyle = 'rgba(12, 6, 2, 0.45)';
+      g.fillRect(padX, padY, fw, 3);
+      g.fillRect(padX, padY, 3, fh);
+    },
+    { repeat },
+  );
+}
+
+// 2c. Rich Heritage Tavern Plaster Wall (512x512) - Velvety, Warm & Noise-Free
+export function tavernPlasterWallTex(
+  color: 'emerald' | 'burgundy' | 'amber' = 'emerald',
+  repeat: [number, number] = [3, 2],
+): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    512,
+    (g, w, h) => {
+      // Colors: deep luxurious British racing green or warm vintage tavern burgundy
+      const topCol = color === 'emerald' ? '#173629' : color === 'burgundy' ? '#42161b' : '#3d2b1f';
+      const midCol = color === 'emerald' ? '#1c4233' : color === 'burgundy' ? '#4d1c21' : '#493425';
+      const botCol = color === 'emerald' ? '#122c21' : color === 'burgundy' ? '#351115' : '#2f2017';
+
+      const wallGrad = g.createLinearGradient(0, 0, 0, h);
+      wallGrad.addColorStop(0, topCol);
+      wallGrad.addColorStop(0.5, midCol);
+      wallGrad.addColorStop(1, botCol);
+      g.fillStyle = wallGrad;
+      g.fillRect(0, 0, w, h);
+
+      // Soft, subtle Venetian plaster micro-mottling (large soft radius circles, NO high-frequency noise)
+      const r = mulberry32(77);
+      for (let i = 0; i < 35; i++) {
+        const rad = 40 + r() * 80;
+        const px = r() * w;
+        const py = r() * h;
+        const radGrad = g.createRadialGradient(px, py, 4, px, py, rad);
+        const alpha = 0.03 + r() * 0.04;
+        radGrad.addColorStop(0, r() > 0.5 ? `rgba(255, 235, 205, ${alpha})` : `rgba(0, 0, 0, ${alpha * 1.5})`);
+        radGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        g.fillStyle = radGrad;
         g.beginPath();
-        const startX = r() * w;
-        const startY = r() * h;
-        g.moveTo(startX, startY);
-        g.bezierCurveTo(startX + 100, startY + (r() - 0.5) * 30, startX + 240, startY + (r() - 0.5) * 40, startX + 380, startY);
-        g.stroke();
+        g.arc(px, py, rad, 0, Math.PI * 2);
+        g.fill();
+      }
+
+      // Very subtle, elegant vintage wall stripe accent
+      for (let x = 64; x < w; x += 64) {
+        g.fillStyle = 'rgba(255, 235, 200, 0.025)';
+        g.fillRect(x, 0, 2, h);
+        g.fillStyle = 'rgba(0, 0, 0, 0.04)';
+        g.fillRect(x + 2, 0, 2, h);
       }
     },
     { repeat },
   );
 }
 
-// 3. High-Resolution Brick Fireplace Hearth (512x512)
+// 3. High-Resolution Artisan Brick Fireplace Hearth (512x512) - Smooth, warm, no speckles
 export function brickWallTex(seed = 202, repeat: [number, number] = [3, 3]): THREE.CanvasTexture {
   return makeCanvasTex(
     512,
     512,
     (g, w, h) => {
       const r = mulberry32(seed);
-      // Textured rough mortar base
-      g.fillStyle = '#2d221c';
+      // Clean, rich dark mortar base
+      g.fillStyle = '#231812';
       g.fillRect(0, 0, w, h);
       const rows = 10;
       const cols = 5;
@@ -159,32 +268,94 @@ export function brickWallTex(seed = 202, repeat: [number, number] = [3, 3]): THR
       for (let ry = 0; ry < rows; ry++) {
         const off = (ry % 2) * (bw / 2);
         for (let cx = -1; cx <= cols; cx++) {
-          const k = 0.85 + r() * 0.3;
-          const brickR = Math.round(155 * k);
-          const brickG = Math.round(65 * k);
-          const brickB = Math.round(40 * k);
+          const k = 0.88 + r() * 0.24;
+          const brickR = Math.round(152 * k);
+          const brickG = Math.round(68 * k);
+          const brickB = Math.round(44 * k);
 
           const bx = cx * bw + off + 3;
           const by = ry * bh + 3;
           const bwk = bw - 6;
           const bhk = bh - 6;
 
-          // Brick gradient
+          // Warm brick gradient with soft internal lighting
           const bGrad = g.createLinearGradient(bx, by, bx, by + bhk);
-          bGrad.addColorStop(0, `rgb(${Math.round(brickR * 1.1)},${Math.round(brickG * 1.1)},${Math.round(brickB * 1.1)})`);
-          bGrad.addColorStop(1, `rgb(${Math.round(brickR * 0.85)},${Math.round(brickG * 0.85)},${Math.round(brickB * 0.85)})`);
+          bGrad.addColorStop(0, `rgb(${Math.round(brickR * 1.08)},${Math.round(brickG * 1.08)},${Math.round(brickB * 1.08)})`);
+          bGrad.addColorStop(0.5, `rgb(${brickR},${brickG},${brickB})`);
+          bGrad.addColorStop(1, `rgb(${Math.round(brickR * 0.86)},${Math.round(brickG * 0.86)},${Math.round(brickB * 0.86)})`);
           g.fillStyle = bGrad;
-          g.fillRect(bx, by, bwk, bhk);
 
-          // Subtle brick surface speckling
-          for (let p = 0; p < 25; p++) {
-            g.fillStyle = r() > 0.5 ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.08)';
-            g.fillRect(bx + r() * bwk, by + r() * bhk, 2, 2);
-          }
+          // Smooth rounded rectangle for the brick face
+          const rad = 2;
+          g.beginPath();
+          g.roundRect(bx, by, bwk, bhk, rad);
+          g.fill();
+
+          // Soft highlight on top edge and shadow on bottom edge
+          g.fillStyle = 'rgba(255, 230, 200, 0.12)';
+          g.fillRect(bx + 2, by + 1, bwk - 4, 1.5);
+          g.fillStyle = 'rgba(15, 8, 4, 0.35)';
+          g.fillRect(bx + 2, by + bhk - 2, bwk - 4, 1.5);
         }
       }
     },
     { repeat },
+  );
+}
+
+// 3b. Leaded Diamond-Paned Pub Window (512x512)
+export function leadedPubWindowTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    512,
+    (g, w, h) => {
+      // Exterior twilight / amber interior lantern back-glow
+      const skyGrad = g.createLinearGradient(0, 0, 0, h);
+      skyGrad.addColorStop(0, '#151c34');
+      skyGrad.addColorStop(0.6, '#282b4a');
+      skyGrad.addColorStop(1, '#4d3b2a');
+      g.fillStyle = skyGrad;
+      g.fillRect(0, 0, w, h);
+
+      // Warm amber lantern glow radiating through glass
+      const glow = g.createRadialGradient(w * 0.5, h * 0.75, 20, w * 0.5, h * 0.75, 240);
+      glow.addColorStop(0, 'rgba(255, 185, 75, 0.55)');
+      glow.addColorStop(0.5, 'rgba(240, 140, 50, 0.28)');
+      glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      g.fillStyle = glow;
+      g.fillRect(0, 0, w, h);
+
+      // Diamond leaded lattice canes
+      g.strokeStyle = '#1a1924';
+      g.lineWidth = 3.5;
+      const step = 48;
+      for (let d = -w; d < w * 2; d += step) {
+        g.beginPath();
+        g.moveTo(d, 0);
+        g.lineTo(d + h, h);
+        g.stroke();
+
+        g.beginPath();
+        g.moveTo(d, 0);
+        g.lineTo(d - h, h);
+        g.stroke();
+      }
+
+      // Timber window frame and central mullion
+      g.fillStyle = '#23140a';
+      g.fillRect(0, 0, w, 18);
+      g.fillRect(0, h - 18, w, 18);
+      g.fillRect(0, 0, 18, h);
+      g.fillRect(w - 18, 0, 18, h);
+      g.fillRect(w * 0.5 - 7, 0, 14, h);
+      g.fillRect(0, h * 0.5 - 7, w, 14);
+
+      // Frame inner bevel highlight
+      g.fillStyle = 'rgba(255, 220, 170, 0.2)';
+      g.fillRect(18, 18, w - 36, 2);
+      g.fillRect(18, 18, 2, h - 36);
+    },
+    { repeat: [1, 1] },
   );
 }
 
@@ -808,36 +979,168 @@ export function drawArcadeScreen(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  variant: number,
+  stationType: 'lobby' | 'ludo' | 'dice' | 'darts' | 'retro' | number,
   time: number,
 ): void {
-  ctx.fillStyle = '#080c18';
+  ctx.fillStyle = '#060812';
   ctx.fillRect(0, 0, w, h);
 
-  const colors = ['#ff5ec4', '#54e0ee', '#ffb84a', '#5fe08a'];
-  const title = ['CYBER POOL', 'PAC-PULSE', 'STREET 95', 'GALAXY-9'][variant % 4];
-
-  ctx.fillStyle = colors[variant % 4];
-  ctx.font = "bold 32px 'Chakra Petch', monospace";
-  ctx.textAlign = 'center';
-  ctx.fillText(title, w / 2, 60);
-
-  // Animated arcade graphics
-  ctx.strokeStyle = colors[(variant + 1) % 4];
-  ctx.lineWidth = 4;
-  for (let y = 100; y < h - 40; y += 28) {
-    const wave = Math.sin(time * 4 + y * 0.05 + variant) * 35;
-    ctx.beginPath();
-    ctx.moveTo(30, y);
-    ctx.lineTo(w / 2 + wave, y);
-    ctx.lineTo(w - 30, y);
-    ctx.stroke();
+  let type = stationType;
+  if (typeof type === 'number') {
+    const map: Array<'lobby' | 'ludo' | 'dice' | 'darts' | 'retro'> = ['lobby', 'ludo', 'dice', 'darts', 'retro'];
+    type = map[type % map.length];
   }
 
-  // Scanlines
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  for (let y = 0; y < h; y += 4) {
-    ctx.fillRect(0, y, w, 2);
+  if (type === 'lobby') {
+    // NET-PLAY TERMINAL
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(6, 6, w - 12, h - 12);
+
+    ctx.fillStyle = '#54e0ee';
+    ctx.font = "bold 15px 'Chakra Petch', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText('NET LOBBY', w / 2, 24);
+
+    const cx = w / 2;
+    const cy = h / 2 + 4;
+    ctx.strokeStyle = 'rgba(84, 224, 238, 0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 26, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 16, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const angle = time * 3.5;
+    ctx.strokeStyle = '#54e0ee';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(angle) * 26, cy + Math.sin(angle) * 26);
+    ctx.stroke();
+
+    ctx.fillStyle = Math.sin(time * 6) > 0 ? '#ff5ec4' : '#5fe08a';
+    ctx.font = "bold 10px 'Chakra Petch', monospace";
+    ctx.fillText('ONLINE • 1-4P', w / 2, h - 12);
+  } else if (type === 'ludo') {
+    // LUDO ROYALE ARCADE
+    ctx.fillStyle = '#1e1428';
+    ctx.fillRect(6, 6, w - 12, h - 12);
+
+    ctx.fillStyle = '#ffb84a';
+    ctx.font = "bold 15px 'Chakra Petch', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText('LUDO ROYALE', w / 2, 24);
+
+    const cx = w / 2;
+    const cy = h / 2 + 4;
+    const pawnColors = ['#e63946', '#2a9d8f', '#e9c46a', '#457b9d'];
+    pawnColors.forEach((c, idx) => {
+      const a = time * 2.5 + (idx * Math.PI) / 2;
+      const px = cx + Math.cos(a) * 22;
+      const py = cy + Math.sin(a) * 14;
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const dieFace = (Math.floor(time * 3) % 6) + 1;
+    ctx.fillStyle = '#fffdf5';
+    ctx.fillRect(cx - 8, cy - 8, 16, 16);
+    ctx.fillStyle = '#1e1428';
+    ctx.font = "bold 11px monospace";
+    ctx.fillText(String(dieFace), cx, cy + 4);
+
+    ctx.fillStyle = Math.sin(time * 5) > 0 ? '#54e0ee' : '#ffffff';
+    ctx.font = "bold 10px 'Chakra Petch', monospace";
+    ctx.fillText('PRESS 1P/2P START', w / 2, h - 12);
+  } else if (type === 'dice') {
+    // CYBER DICE SHAKER
+    ctx.fillStyle = '#181222';
+    ctx.fillRect(6, 6, w - 12, h - 12);
+
+    ctx.fillStyle = '#ff5ec4';
+    ctx.font = "bold 15px 'Chakra Petch', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText('CYBER DICE', w / 2, 24);
+
+    const cx = w / 2;
+    const cy = h / 2 + 2;
+    const wobble = Math.sin(time * 8) * 6;
+    ctx.fillStyle = '#d4af37';
+    ctx.beginPath();
+    ctx.moveTo(cx - 16 + wobble, cy + 14);
+    ctx.lineTo(cx + 16 + wobble, cy + 14);
+    ctx.lineTo(cx + 11 + wobble, cy - 10);
+    ctx.lineTo(cx - 11 + wobble, cy - 10);
+    ctx.closePath();
+    ctx.fill();
+
+    for (let i = 0; i < 5; i++) {
+      const dx = cx - 22 + i * 11;
+      const dy = cy + 18;
+      ctx.fillStyle = '#ffcf78';
+      ctx.fillRect(dx, dy, 7, 7);
+    }
+
+    ctx.fillStyle = Math.sin(time * 5) > 0 ? '#ffb84a' : '#fff';
+    ctx.font = "bold 10px 'Chakra Petch', monospace";
+    ctx.fillText('SHAKE & BLUFF', w / 2, h - 12);
+  } else if (type === 'darts') {
+    // PIXEL DARTS DELUXE
+    ctx.fillStyle = '#0b161a';
+    ctx.fillRect(6, 6, w - 12, h - 12);
+
+    ctx.fillStyle = '#5fe08a';
+    ctx.font = "bold 15px 'Chakra Petch', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText('PIXEL DARTS', w / 2, 24);
+
+    const cx = w / 2;
+    const cy = h / 2 + 4;
+    for (const r of [24, 18, 12, 6]) {
+      ctx.strokeStyle = r % 12 === 0 ? '#ff4a3a' : '#5fe08a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#ffb84a';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = Math.sin(time * 4) > 0 ? '#ff4a3a' : '#54e0ee';
+    ctx.font = "bold 10px 'Chakra Petch', monospace";
+    ctx.fillText('301 • 501 • CRICKET', w / 2, h - 12);
+  } else {
+    // RETRO SPACE CLASSIC
+    ctx.fillStyle = '#060614';
+    ctx.fillRect(6, 6, w - 12, h - 12);
+
+    ctx.fillStyle = '#54e0ee';
+    ctx.font = "bold 15px 'Chakra Petch', monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText('SPACE 95', w / 2, 24);
+
+    const wave = Math.sin(time * 5) * 16;
+    ctx.fillStyle = '#ff5ec4';
+    ctx.fillRect(w / 2 - 14 + wave, h / 2 - 8, 8, 6);
+    ctx.fillRect(w / 2 + 6 + wave, h / 2 - 8, 8, 6);
+    ctx.fillRect(w / 2 - 4 + wave, h / 2 + 2, 8, 6);
+
+    ctx.fillStyle = '#5fe08a';
+    ctx.fillRect(w / 2 - 5, h - 28, 10, 8);
+
+    ctx.fillStyle = Math.sin(time * 6) > 0 ? '#ffb84a' : '#fff';
+    ctx.font = "bold 10px 'Chakra Petch', monospace";
+    ctx.fillText('INSERT COIN', w / 2, h - 12);
+  }
+
+  // Horizontal scanlines
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+  for (let y = 0; y < h; y += 3) {
+    ctx.fillRect(0, y, w, 1.2);
   }
 }
 
@@ -866,7 +1169,7 @@ export function openNeonTex(): THREE.CanvasTexture {
   );
 }
 
-// 13. Arcade Lobby Matchmaking Marquee
+// 13. Arcade Matchmaking & Game Marquees
 export function lobbyMarqueeTex(): THREE.CanvasTexture {
   return makeCanvasTex(
     512,
@@ -881,10 +1184,156 @@ export function lobbyMarqueeTex(): THREE.CanvasTexture {
       g.strokeRect(10, 10, w - 20, h - 20);
 
       g.fillStyle = '#54e0ee';
-      g.font = "bold 56px 'Chakra Petch', monospace";
+      g.font = "bold 52px 'Chakra Petch', monospace";
       g.textAlign = 'center';
       g.textBaseline = 'middle';
       g.fillText('ONLINE LOBBY', w / 2, h / 2);
+    },
+  );
+}
+
+export function ludoMarqueeTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    192,
+    (g, w, h) => {
+      g.fillStyle = '#180e29';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#ffb84a';
+      g.lineWidth = 8;
+      g.shadowColor = '#ffb84a';
+      g.shadowBlur = 18;
+      g.strokeRect(10, 10, w - 20, h - 20);
+
+      g.fillStyle = '#ffb84a';
+      g.font = "bold 50px 'Chakra Petch', monospace";
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('LUDO ROYALE', w / 2, h / 2 - 8);
+
+      g.fillStyle = '#54e0ee';
+      g.font = "bold 20px 'Chakra Petch', monospace";
+      g.fillText('★ 4-PLAYER ARCADE ★', w / 2, h / 2 + 36);
+    },
+  );
+}
+
+export function diceMarqueeTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    192,
+    (g, w, h) => {
+      g.fillStyle = '#1c0f20';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#ff5ec4';
+      g.lineWidth = 8;
+      g.shadowColor = '#ff5ec4';
+      g.shadowBlur = 18;
+      g.strokeRect(10, 10, w - 20, h - 20);
+
+      g.fillStyle = '#ff5ec4';
+      g.font = "bold 50px 'Chakra Petch', monospace";
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('CYBER DICE', w / 2, h / 2 - 8);
+
+      g.fillStyle = '#ffb84a';
+      g.font = "bold 20px 'Chakra Petch', monospace";
+      g.fillText('◆ LIAR\'S DICE CUP ◆', w / 2, h / 2 + 36);
+    },
+  );
+}
+
+export function dartsMarqueeTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    192,
+    (g, w, h) => {
+      g.fillStyle = '#0a181e';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#5fe08a';
+      g.lineWidth = 8;
+      g.shadowColor = '#5fe08a';
+      g.shadowBlur = 18;
+      g.strokeRect(10, 10, w - 20, h - 20);
+
+      g.fillStyle = '#5fe08a';
+      g.font = "bold 48px 'Chakra Petch', monospace";
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('PIXEL DARTS', w / 2, h / 2 - 8);
+
+      g.fillStyle = '#ff4a3a';
+      g.font = "bold 20px 'Chakra Petch', monospace";
+      g.fillText('◎ 301 / 501 OCHE ◎', w / 2, h / 2 + 36);
+    },
+  );
+}
+
+export function retroMarqueeTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    512,
+    192,
+    (g, w, h) => {
+      g.fillStyle = '#0d0d24';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#00f0ff';
+      g.lineWidth = 8;
+      g.shadowColor = '#00f0ff';
+      g.shadowBlur = 18;
+      g.strokeRect(10, 10, w - 20, h - 20);
+
+      g.fillStyle = '#00f0ff';
+      g.font = "bold 52px 'Chakra Petch', monospace";
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('SPACE 95', w / 2, h / 2);
+    },
+  );
+}
+
+export function coinDoorTex(): THREE.CanvasTexture {
+  return makeCanvasTex(
+    256,
+    256,
+    (g, w, h) => {
+      // Cast black steel finish
+      g.fillStyle = '#141416';
+      g.fillRect(0, 0, w, h);
+      g.strokeStyle = '#2b2b32';
+      g.lineWidth = 6;
+      g.strokeRect(6, 6, w - 12, h - 12);
+
+      // Dual coin reject slots with orange glow
+      for (const ox of [w * 0.3, w * 0.7]) {
+        g.fillStyle = '#0c0c0e';
+        g.fillRect(ox - 24, 30, 48, 64);
+        g.fillStyle = '#ff7a22';
+        g.shadowColor = '#ff7a22';
+        g.shadowBlur = 10;
+        g.fillRect(ox - 16, 44, 32, 24);
+        g.shadowBlur = 0;
+        g.fillStyle = '#101010';
+        g.font = "bold 13px monospace";
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText('25¢', ox, 56);
+      }
+
+      // Return flap doors
+      for (const ox of [w * 0.3, w * 0.7]) {
+        g.fillStyle = '#1a1a1e';
+        g.fillRect(ox - 24, 130, 48, 48);
+        g.strokeStyle = '#32323a';
+        g.lineWidth = 3;
+        g.strokeRect(ox - 24, 130, 48, 48);
+      }
+
+      // Center lock keyhole
+      g.fillStyle = '#3a3a42';
+      g.beginPath();
+      g.arc(w / 2, 104, 7, 0, Math.PI * 2);
+      g.fill();
     },
   );
 }
@@ -900,15 +1349,13 @@ export function orientalRugTex(variant: 'crimson' | 'emerald' = 'crimson'): THRE
       const gold = '#cda142';
       const cream = '#f2ebd9';
 
-      // Base woven wool texture
-      g.fillStyle = primary;
+      // Base woven wool texture with subtle rich depth (noise-free)
+      const rugGrad = g.createLinearGradient(0, 0, 0, h);
+      rugGrad.addColorStop(0, primary);
+      rugGrad.addColorStop(0.5, variant === 'crimson' ? '#801e25' : '#195c3c');
+      rugGrad.addColorStop(1, primary);
+      g.fillStyle = rugGrad;
       g.fillRect(0, 0, w, h);
-
-      // Wool weave noise
-      for (let i = 0; i < 9000; i++) {
-        g.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.03)';
-        g.fillRect(Math.random() * w, Math.random() * h, 2, 2);
-      }
 
       // Outer gold fringe on left and right
       g.fillStyle = cream;

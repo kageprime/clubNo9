@@ -16,6 +16,7 @@ import {
   ChevronUp,
   Eye,
   RotateCcw,
+  RotateCw,
   Sparkles,
   Copy,
   Check,
@@ -41,6 +42,7 @@ import { DiceCupSim } from './game/diceCupSim.ts';
 import {
   ClubWorld,
   STATION_HOTSPOTS,
+  resolveLoungeSlide,
   type StationId,
   type LudoCamMode,
 } from './scene/clubWorld.ts';
@@ -82,10 +84,34 @@ export default function App() {
   const [pausedGames, setPausedGames] = useState<Partial<Record<StationId, boolean>>>({});
   const [showNavMenu, setShowNavMenu] = useState(false);
   const [hudCollapsed, setHudCollapsed] = useState(false);
+  const [hudIdle, setHudIdle] = useState(false);
+  const [coachStep, setCoachStep] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem('club9_coach_step');
+      return s ? parseInt(s, 10) : 1;
+    } catch {
+      return 1;
+    }
+  });
+  const [statsInfo, setStatsInfo] = useState<{ fps: number; calls: number; tris: number; tex: number } | null>(null);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showStatsRef = useRef<boolean>(qs.get('stats') === '1');
+  const statsFrameCountRef = useRef<number>(0);
+  const statsEmaFpsRef = useRef<number>(60);
+
+  const resetIdleTimer = useCallback(() => {
+    setHudIdle(false);
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      setHudIdle(true);
+    }, 6000);
+  }, []);
+
   const [transitionUi, setTransitionUi] = useState<ViewTransitionState>(() =>
     createIdleTransition(autoStart ? initialStation : 'none'),
   );
   const [loungeCam, setLoungeCam] = useState<'isometric' | 'fps'>('isometric');
+  const [isoAngleIdx, setIsoAngleIdx] = useState<number>(0);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const [showLudoConfig, setShowLudoConfig] = useState(false);
@@ -96,6 +122,7 @@ export default function App() {
   const [closeUpCam, setCloseUpCam] = useState<boolean>(true);
   const [muted, setMuted] = useState<boolean>(false);
   const [jukeboxTrack, setJukeboxTrack] = useState<number>(0);
+  const [bloomEnabled, setBloomEnabled] = useState<boolean>(true);
 
   // Proximity & Flash banners
   const [nearbyHotspot, setNearbyHotspot] = useState<StationId>('none');
@@ -236,6 +263,8 @@ export default function App() {
   showAimRef.current = showAimLines;
   const closeUpRef = useRef(closeUpCam);
   closeUpRef.current = closeUpCam;
+  const showNavMenuRef = useRef(showNavMenu);
+  showNavMenuRef.current = showNavMenu;
 
   const keysHeldRef = useRef<Set<string>>(new Set());
   const chargeRef = useRef<{ active: boolean; t: number; lastRattle: number }>({
@@ -851,21 +880,25 @@ export default function App() {
           if (keys.has('KeyA') || keys.has('ArrowLeft')) dx -= 1;
           if (keys.has('KeyD') || keys.has('ArrowRight')) dx += 1;
 
-          // Click-to-move navigation support
-          if (dx === 0 && dz === 0 && world.playerTarget) {
-            const tx = world.playerTarget.x - world.player.x;
-            const tz = world.playerTarget.z - world.player.z;
+          // Click-to-move A* Waypoint Path navigation
+          if (dx === 0 && dz === 0 && world.playerWaypoints && world.playerWaypoints.length > 0) {
+            const nextWp = world.playerWaypoints[0];
+            const tx = nextWp.x - world.player.x;
+            const tz = nextWp.z - world.player.z;
             const dist = Math.hypot(tx, tz);
-            if (dist > 0.1) {
+            if (dist > 0.12) {
               dx = tx / dist;
               dz = tz / dist;
               const targetYaw = Math.atan2(dx, dz);
               let diff = (targetYaw - world.player.yaw) % (Math.PI * 2);
               if (diff < -Math.PI) diff += Math.PI * 2;
               if (diff > Math.PI) diff -= Math.PI * 2;
-              world.player.yaw += diff * 0.22;
+              world.player.yaw += diff * 0.25;
             } else {
-              world.clearMoveTarget();
+              world.playerWaypoints.shift();
+              if (world.playerWaypoints.length === 0) {
+                world.clearMoveTarget();
+              }
             }
           } else if (dx !== 0 || dz !== 0) {
             world.clearMoveTarget();
@@ -875,32 +908,62 @@ export default function App() {
             const len = Math.hypot(dx, dz);
             dx /= len;
             dz /= len;
-            if (world.loungeCamMode === 'fps') {
+            let wx = 0;
+            let wz = 0;
+            if (world.playerWaypoints && world.playerWaypoints.length > 0) {
+              wx = dx;
+              wz = dz;
+            } else if (world.loungeCamMode === 'fps') {
               const fwdX = Math.sin(world.fpsYaw);
               const fwdZ = -Math.cos(world.fpsYaw);
               const rightX = Math.cos(world.fpsYaw);
               const rightZ = Math.sin(world.fpsYaw);
-              const wx = fwdX * -dz + rightX * dx;
-              const wz = fwdZ * -dz + rightZ * dx;
-              world.player.x += wx * moveSpeed * rawDt;
-              world.player.z += wz * moveSpeed * rawDt;
+              wx = fwdX * -dz + rightX * dx;
+              wz = fwdZ * -dz + rightZ * dx;
               world.player.yaw = world.fpsYaw;
             } else {
-              world.player.x += dx * moveSpeed * rawDt;
-              world.player.z += dz * moveSpeed * rawDt;
-              world.player.yaw = Math.atan2(dx, dz);
+              // Camera-relative movement in Isometric mode across all 90-degree rotations
+              const angle = world.isoCurrentAngle;
+              const cosA = Math.cos(angle);
+              const sinA = Math.sin(angle);
+              const baseFwdX = 0.57;
+              const baseFwdZ = -0.822;
+              const fwdX = baseFwdX * cosA - baseFwdZ * sinA;
+              const fwdZ = baseFwdX * sinA + baseFwdZ * cosA;
+              const rightX = -fwdZ;
+              const rightZ = fwdX;
+
+              wx = rightX * dx + fwdX * (-dz);
+              wz = rightZ * dx + fwdZ * (-dz);
+              world.player.yaw = Math.atan2(wx, wz);
             }
-            // Clamp to walkable lounge floor & avoid central pool table overlap
-            world.player.x = Math.max(-4.6, Math.min(4.2, world.player.x));
-            world.player.z = Math.max(-3.3, Math.min(3.6, world.player.z));
-            if (Math.abs(world.player.x) < 1.35 && Math.abs(world.player.z - 0.25) < 0.82) {
-              if (Math.abs(world.player.x) > Math.abs(world.player.z - 0.25)) {
-                world.player.x = Math.sign(world.player.x || 1) * 1.35;
-              } else {
-                world.player.z = 0.25 + Math.sign(world.player.z - 0.25 || 1) * 0.82;
-              }
+
+            // Real AABB collision check with decoupled slide response!
+            const stepDist = moveSpeed * rawDt;
+            const moved = resolveLoungeSlide(
+              world.player.x,
+              world.player.z,
+              wx * stepDist,
+              wz * stepDist,
+              0.26,
+            );
+            const actualDist = Math.hypot(moved.x - world.player.x, moved.z - world.player.z);
+            world.player.x = moved.x;
+            world.player.z = moved.z;
+
+            // Distance-based footstep audio
+            const prevDist = world.player.walkDist;
+            world.player.walkDist += actualDist;
+            if (Math.floor(world.player.walkDist / 0.72) > Math.floor(prevDist / 0.72)) {
+              audioRef.current.play('step');
             }
-            world.player.walkDist += moveSpeed * rawDt;
+
+            // Coach marks step 1 (Move) progression
+            if (coachStep === 1 && actualDist > 0.005) {
+              setCoachStep(2);
+              localStorage.setItem('club9_coach_step', '2');
+            }
+
             lobby.broadcast({
               type: 'avatar',
               x: world.player.x,
@@ -919,7 +982,16 @@ export default function App() {
               closest = hs.id;
             }
           }
-          setNearbyHotspot((prev) => (prev !== closest ? closest : prev));
+          setNearbyHotspot((prev) => {
+            if (prev !== closest) {
+              if (closest !== 'none' && coachStep === 2) {
+                setCoachStep(3);
+                localStorage.setItem('club9_coach_step', '3');
+              }
+              return closest;
+            }
+            return prev;
+          });
 
           // Check nearest NPC patron for speech bubble
           let nearNpc = null;
@@ -1155,6 +1227,20 @@ export default function App() {
         }
 
         world.render();
+
+        // Performance stats overlay update (?stats=1)
+        if (showStatsRef.current && world.renderer) {
+          statsFrameCountRef.current++;
+          statsEmaFpsRef.current = statsEmaFpsRef.current * 0.9 + (1 / Math.max(0.001, rawDt)) * 0.1;
+          if (statsFrameCountRef.current % 15 === 0) {
+            setStatsInfo({
+              fps: Math.round(statsEmaFpsRef.current),
+              calls: world.renderer.info.render.calls,
+              tris: world.renderer.info.render.triangles,
+              tex: world.renderer.info.memory.textures,
+            });
+          }
+        }
       };
 
       rafId = requestAnimationFrame(tick);
@@ -1188,6 +1274,10 @@ export default function App() {
 
       if (code === 'Escape') {
         e.preventDefault();
+        if (showNavMenuRef.current) {
+          setShowNavMenu(false);
+          return;
+        }
         if (stationRef.current !== 'none') {
           // Leaving a table pauses the active game and returns to the Lounge to walk around!
           leaveAndPauseStation();
@@ -1231,6 +1321,23 @@ export default function App() {
             if (worldRef.current) worldRef.current.loungeCamMode = next;
             return next;
           });
+        } else if (code === 'KeyQ' || code === 'BracketLeft') {
+          if (worldRef.current && worldRef.current.loungeCamMode === 'isometric') {
+            worldRef.current.rotateIso(-1);
+            setIsoAngleIdx(worldRef.current.getIsoAngleIndex());
+            audioRef.current.play('click');
+          }
+        } else if (code === 'KeyR' || code === 'BracketRight') {
+          if (worldRef.current && worldRef.current.loungeCamMode === 'isometric') {
+            worldRef.current.rotateIso(1);
+            setIsoAngleIdx(worldRef.current.getIsoAngleIndex());
+            audioRef.current.play('click');
+          }
+        } else if (code === 'KeyC') {
+          if (worldRef.current && worldRef.current.loungeCamMode === 'isometric') {
+            worldRef.current.recenterCam();
+            audioRef.current.play('click');
+          }
         } else if (code === 'KeyE' || code === 'Enter') {
           if (nearbyHotspot !== 'none') {
             activateStation(nearbyHotspot, Boolean(pausedGamesRef.current[nearbyHotspot]));
@@ -1321,16 +1428,21 @@ export default function App() {
     };
 
     const onResize = () => worldRef.current?.resize();
+    const onActivity = () => resetIdleTimer();
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
     window.addEventListener('resize', onResize);
+    window.addEventListener('pointermove', onActivity, { passive: true });
+    window.addEventListener('touchstart', onActivity, { passive: true });
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointermove', onActivity);
+      window.removeEventListener('touchstart', onActivity);
     };
   }, [
     activateStation,
@@ -1341,14 +1453,36 @@ export default function App() {
     leaveAndPauseStation,
     nearbyHotspot,
     releaseCharge,
+    resetIdleTimer,
     syncDiceReactState,
     syncPoolReactState,
   ]);
 
-  // Canvas pointer interactions (Ludo pawn click, Pool cue aim, Darts aim, FPS/Iso drag)
-  const dragRef = useRef<{ x: number; y: number } | null>(null);
+  // Canvas pointer interactions (Ludo pawn click, Pool cue aim, Darts aim, 6px threshold drag-to-pan vs click)
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    hasMoved: boolean;
+  } | null>(null);
+
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     audioRef.current.unlock();
+    resetIdleTimer();
+    const world = worldRef.current;
+    if (!world) return;
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      hasMoved: false,
+    };
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    resetIdleTimer();
     const world = worldRef.current;
     if (!world) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1358,49 +1492,9 @@ export default function App() {
     };
 
     if (station === 'none') {
-      const clickedStation = world.pickStationAt(ndc);
-      if (clickedStation) {
-        // Clicking any game station in the lounge triggers the custom transition directly into Full-Screen Focused Play
-        const hs = STATION_HOTSPOTS.find((h) => h.id === clickedStation);
-        if (hs) {
-          world.setMoveTarget(hs.x, hs.z);
-        }
-        activateStation(clickedStation, true);
-        return;
-      }
-      // Click-to-move on floor
-      const floorHit = world.pickFloorPoint(ndc);
-      if (floorHit) {
-        world.setMoveTarget(floorHit.x, floorHit.z);
-        dragRef.current = { x: e.clientX, y: e.clientY };
-        return;
-      }
-    } else {
-      dragRef.current = { x: e.clientX, y: e.clientY };
-      if (station === 'ludo' && stationViewMode === 'play') {
-        const pw = world.pickLudoPawn(ndc);
-        if (pw && pw.c === ludoStateRef.current.turn) {
-          chooseLudoMoveForToken(pw.t);
-        }
-      }
+      const hovered = world.updatePointerHover(ndc);
+      e.currentTarget.style.cursor = hovered !== 'none' ? 'pointer' : 'default';
     }
-
-    if (station === 'ludo') {
-      const pw = world.pickLudoPawn(ndc);
-      if (pw && pw.c === ludoStateRef.current.turn) {
-        chooseLudoMoveForToken(pw.t);
-      }
-    }
-  };
-
-  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const world = worldRef.current;
-    if (!world) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ndc = {
-      x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      y: -((e.clientY - rect.top) / rect.height) * 2 + 1,
-    };
 
     if (station === 'ludo') {
       const pw = world.pickLudoPawn(ndc);
@@ -1414,31 +1508,78 @@ export default function App() {
     }
 
     if (dragRef.current) {
-      const dx = e.clientX - dragRef.current.x;
-      const dy = e.clientY - dragRef.current.y;
-      dragRef.current = { x: e.clientX, y: e.clientY };
+      const totalDx = e.clientX - dragRef.current.startX;
+      const totalDy = e.clientY - dragRef.current.startY;
+      if (Math.hypot(totalDx, totalDy) > 6) {
+        dragRef.current.hasMoved = true;
+      }
+
+      const dx = e.clientX - dragRef.current.lastX;
+      const dy = e.clientY - dragRef.current.lastY;
+      dragRef.current.lastX = e.clientX;
+      dragRef.current.lastY = e.clientY;
 
       if (station === 'pool' && poolSimRef.current) {
         poolSimRef.current.cue.yaw += dx * 0.0055;
       } else if (station === 'ludo' && world.ludoCamMode === 'orbit') {
         world.ludoOrbit.yaw -= dx * 0.006;
         world.ludoOrbit.pitch = Math.max(0.25, Math.min(1.45, world.ludoOrbit.pitch + dy * 0.004));
-      } else if (station === 'none' && world.loungeCamMode === 'fps') {
-        world.fpsYaw += dx * 0.0045;
-        world.fpsPitch = Math.max(-0.6, Math.min(0.6, world.fpsPitch - dy * 0.0035));
+      } else if (station === 'none') {
+        if (world.loungeCamMode === 'fps') {
+          world.fpsYaw += dx * 0.0045;
+          world.fpsPitch = Math.max(-0.6, Math.min(0.6, world.fpsPitch - dy * 0.0035));
+        } else if (dragRef.current.hasMoved) {
+          // Drag-to-pan in isometric diorama mode
+          world.panCam(dx, dy);
+        }
       }
     }
   };
 
-  const handleCanvasPointerUp = () => {
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    resetIdleTimer();
+    const world = worldRef.current;
+    const drag = dragRef.current;
     dragRef.current = null;
+    if (!world) return;
+
+    // Displacements <= 6px are treated as a click!
+    if (!drag || !drag.hasMoved) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const ndc = {
+        x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      };
+
+      if (station === 'none') {
+        const clickedStation = world.pickStationAt(ndc);
+        if (clickedStation) {
+          const hs = STATION_HOTSPOTS.find((h) => h.id === clickedStation);
+          if (hs) world.setMoveTarget(hs.x, hs.z);
+          activateStation(clickedStation, true);
+          return;
+        }
+        // Click-to-move with A* pathfinding
+        const floorHit = world.pickFloorPoint(ndc);
+        if (floorHit) {
+          world.setMoveTarget(floorHit.x, floorHit.z);
+          return;
+        }
+      } else if (station === 'ludo' && stationViewMode === 'play') {
+        const pw = world.pickLudoPawn(ndc);
+        if (pw && pw.c === ludoStateRef.current.turn) {
+          chooseLudoMoveForToken(pw.t);
+        }
+      }
+    }
   };
 
   const handleCanvasWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    resetIdleTimer();
     const world = worldRef.current;
     if (!world) return;
     if (station === 'none' && world.loungeCamMode === 'isometric') {
-      world.isoZoom = Math.max(0.65, Math.min(1.35, world.isoZoom + Math.sign(e.deltaY) * 0.06));
+      world.setZoomTarget(e.deltaY);
     } else if (station === 'pool' && poolSimRef.current) {
       poolSimRef.current.cue.power = Math.max(
         0.1,
@@ -1706,7 +1847,7 @@ export default function App() {
           {/* Top-Left Navigation / Leave-and-Pause Control */}
           <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2 pointer-events-auto max-w-[68vw]">
             {isGameStation(station) ? (
-              /* Full-Screen Focused Game Mode: Lounge overlays hidden, only clean Leave & Pause + Camera/HUD controls */
+              /* Full-Screen Focused Game Mode: Lounge overlays hidden, only clean Leave & Pause */
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -1718,209 +1859,66 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              /* Lounge Exploration Mode: Compact Brand Pill + Expandable Club Map Popover */
+              /* Lounge Exploration Mode: Radical-Minimal Menu Chip with Idle Fade */
               <div className="relative flex items-center gap-1.5">
-                <div className="club-panel px-3 py-1.5 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNavMenu((v) => !v);
+                    audioRef.current.play('click');
+                  }}
+                  className={`club-panel px-3 py-1.5 flex items-center gap-2 cursor-pointer transition-opacity duration-500 ${
+                    hudIdle && station === 'none' ? 'opacity-30 hover:opacity-100' : 'opacity-100'
+                  }`}
+                  aria-label="Open Club Map Hub"
+                  title={lang === 'zh' ? '打开俱乐部地图与控制中心 [Tab]' : 'Open Club Map & Hub [Tab]'}
+                >
+                  <span className="text-amber-400 font-bold text-sm">☰</span>
                   <span className="font-display font-bold text-amber-400 tracking-wider text-xs sm:text-sm">
                     {t.clubTitle}
                   </span>
-                  <span className="text-stone-500">·</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowNavMenu((v) => !v)}
-                    aria-expanded={showNavMenu}
-                    className="text-xs font-bold text-cyan-300 hover:text-white flex items-center gap-1 cursor-pointer"
-                  >
-                    <span>
-                      {station === 'none'
-                        ? lang === 'zh'
-                          ? '快速导航'
-                          : 'Club Map'
-                        : lang === 'zh'
-                          ? STATION_HOTSPOTS.find((h) => h.id === station)?.labelZh
-                          : STATION_HOTSPOTS.find((h) => h.id === station)?.labelEn}
-                    </span>
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {station !== 'none' && (
-                  <button
-                    type="button"
-                    onClick={leaveAndPauseStation}
-                    className="club-btn text-xs py-1.5 px-2.5"
-                  >
-                    ← {t.leaveStation}
-                  </button>
-                )}
-
-                {/* Paused Game One-Click Resume Chips while Walking Around Lounge */}
-                {station === 'none' &&
-                  (['pool', 'ludo', 'darts', 'dice'] as StationId[])
-                    .filter((id) => pausedGames[id])
-                    .map((id) => (
-                      <button
-                        key={id}
-                        type="button"
-                        onClick={() => enterPlayMode(id)}
-                        className="club-btn club-btn-gold text-xs py-1.5 px-3 flex items-center gap-1.5 shadow-md"
-                      >
-                        <span>
-                          ▶ {lang === 'zh' ? '继续' : 'Resume'}{' '}
-                          {id === 'pool'
-                            ? lang === 'zh'
-                              ? '台球'
-                              : 'Pool'
-                            : id === 'ludo'
-                              ? 'Ludo'
-                              : id === 'darts'
-                                ? lang === 'zh'
-                                  ? '飞镖'
-                                  : 'Darts'
-                                : lang === 'zh'
-                                  ? '骰盅'
-                                  : 'Dice'}
-                        </span>
-                      </button>
-                    ))}
-
-                {/* Compact Floating Club Map Popover (Lounge Only) */}
-                {showNavMenu && (
-                  <div className="absolute left-0 top-11 club-panel p-2 w-56 flex flex-col gap-1 z-50 shadow-2xl">
-                    <div className="px-2.5 py-1 text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
-                      <span>{lang === 'zh' ? '进入全屏专注游戏' : 'Enter Focused Game'}</span>
-                      <span>[TAB]</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => activateStation('none')}
-                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
-                        station === 'none' ? 'club-btn-active' : ''
-                      }`}
-                    >
-                      <span>🚶 {t.loungeMode}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => enterPlayMode('pool')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
-                    >
-                      <span>🎱 {t.stationPool}</span>
-                      {pausedGames.pool && (
-                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => enterPlayMode('ludo')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
-                    >
-                      <span>🎲 {t.stationLudo}</span>
-                      {pausedGames.ludo && (
-                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => enterPlayMode('darts')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
-                    >
-                      <span>🎯 {t.stationDarts}</span>
-                      {pausedGames.darts && (
-                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => enterPlayMode('dice')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
-                    >
-                      <span>🥤 {t.stationDice}</span>
-                      {pausedGames.dice && (
-                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
-                      )}
-                    </button>
-                    <div className="border-t border-white/10 my-0.5" />
-                    <button
-                      type="button"
-                      onClick={() => activateStation('arcade')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center gap-1.5"
-                    >
-                      <Users className="w-3.5 h-3.5 text-cyan-300" />
-                      <span>{t.stationArcade}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => activateStation('bartender')}
-                      className="club-btn text-xs py-1.5 px-2.5 text-left"
-                    >
-                      🍺 {t.stationBartender}
-                    </button>
-                    {station === 'none' && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLoungeCam((prev) => {
-                            const next = prev === 'isometric' ? 'fps' : 'isometric';
-                            if (worldRef.current) worldRef.current.loungeCamMode = next;
-                            return next;
-                          });
-                          setShowNavMenu(false);
-                        }}
-                        className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center gap-1.5"
-                      >
-                        <Eye className="w-3.5 h-3.5 text-amber-400" />
-                        <span>{loungeCam === 'isometric' ? t.isoView : t.fpsView} [V]</span>
-                      </button>
-                    )}
-                  </div>
-                )}
+                  <kbd className="club-kbd text-[10px] hidden sm:inline">TAB</kbd>
+                </button>
               </div>
             )}
           </div>
 
-          {/* Top-Right Compact Utility Icons (Lounge Jukebox hidden during focused game sessions) */}
-          <div className="absolute right-3 top-3 flex items-center gap-1.5 pointer-events-auto">
+          {/* Top-Right Radical-Minimal Utility Controls */}
+          <div
+            className={`absolute right-3 top-3 flex items-center gap-1.5 pointer-events-auto transition-opacity duration-500 ${
+              hudIdle && station === 'none' ? 'opacity-30 hover:opacity-100' : 'opacity-100'
+            }`}
+          >
             {isGameStation(station) && (
-              <button
-                type="button"
-                onClick={() => setHudCollapsed((v) => !v)}
-                className="club-btn text-xs py-1.5 px-2.5 flex items-center gap-1"
-                aria-label={hudCollapsed ? 'Show Controls' : 'Hide Controls'}
-                title="Toggle Bottom Controls [H]"
-              >
-                {hudCollapsed ? (
-                  <>
-                    <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
-                    <span className="hidden sm:inline">{lang === 'zh' ? '显示控制' : 'Controls'}</span>
-                  </>
-                ) : (
-                  <>
-                    <ChevronDown className="w-3.5 h-3.5 text-cyan-300" />
-                    <span className="hidden sm:inline">{lang === 'zh' ? '隐藏面板' : 'Zen HUD'}</span>
-                  </>
-                )}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
-              className="club-btn text-xs py-1.5 px-2"
-              aria-label="Toggle Language"
-            >
-              {lang === 'zh' ? 'EN' : '中文'}
-            </button>
-            {!isGameStation(station) && (
-              <button
-                type="button"
-                onClick={() => activateStation('jukebox')}
-                className="club-btn text-xs py-1.5 px-2 flex items-center gap-1"
-                aria-label="Switch Jukebox Track"
-                title={t.tracks[jukeboxTrack]}
-              >
-                <Disc3 className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden sm:inline">CH.{jukeboxTrack + 1}</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setHudCollapsed((v) => !v)}
+                  className="club-btn text-xs py-1.5 px-2.5 flex items-center gap-1"
+                  aria-label={hudCollapsed ? 'Show Controls' : 'Hide Controls'}
+                  title="Toggle Bottom Controls [H]"
+                >
+                  {hudCollapsed ? (
+                    <>
+                      <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="hidden sm:inline">{lang === 'zh' ? '显示控制' : 'Controls'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-3.5 h-3.5 text-cyan-300" />
+                      <span className="hidden sm:inline">{lang === 'zh' ? '隐藏面板' : 'Zen HUD'}</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
+                  className="club-btn text-xs py-1.5 px-2"
+                  aria-label="Toggle Language"
+                >
+                  {lang === 'zh' ? 'EN' : '中文'}
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -1933,6 +1931,7 @@ export default function App() {
               }}
               className="club-btn py-1.5 px-2"
               aria-label={t.soundMute}
+              title={muted ? 'Unmute' : 'Mute'}
             >
               {muted ? (
                 <VolumeX className="w-3.5 h-3.5 text-rose-400" />
@@ -1945,6 +1944,7 @@ export default function App() {
               onClick={() => setShowSettingsModal(true)}
               className="club-btn py-1.5 px-2"
               aria-label={t.settings}
+              title="Settings"
             >
               <Settings className="w-3.5 h-3.5" />
             </button>
@@ -2164,12 +2164,53 @@ export default function App() {
             </div>
           )}
 
-          {/* Subtle Non-Invasive Lounge Footer Hint (Lounge Only) */}
-          {station === 'none' && !transitionUi.hideLoungeOverlays && (
-            <div className="absolute left-1/2 bottom-3 -translate-x-1/2 text-[11px] text-stone-300/80 bg-black/55 px-3.5 py-1 rounded-full border border-white/10 pointer-events-none whitespace-nowrap">
-              {lang === 'zh'
-                ? '点击地面移动 · 点击任意球桌进入全屏沉浸对局 · WASD 行走 · V 切换视角'
-                : 'Click floor to walk · Click any table for full-screen game focus · WASD Move · V Camera'}
+          {/* First-Run Contextual Coach Marks (Step 1: Move -> Step 2: Interact -> Step 3: Map) */}
+          {station === 'none' && coachStep <= 3 && !transitionUi.hideLoungeOverlays && (
+            <div className="absolute left-1/2 bottom-5 -translate-x-1/2 pointer-events-auto z-20">
+              <div className="club-panel px-4 py-2 flex items-center gap-3 text-xs shadow-2xl border border-amber-400/40">
+                <span className="text-amber-400 font-bold">
+                  {coachStep === 1
+                    ? lang === 'zh'
+                      ? '💡 提示 1/3: 点击地面或使用 WASD 移动'
+                      : '💡 Tip 1/3: Click floor or use WASD to walk'
+                    : coachStep === 2
+                      ? lang === 'zh'
+                        ? '💡 提示 2/3: 靠近任意游戏机台并按 E 开始'
+                        : '💡 Tip 2/3: Walk up to any game table and press E'
+                      : lang === 'zh'
+                        ? '💡 提示 3/3: 按 TAB 打开俱乐部地图'
+                        : '💡 Tip 3/3: Press TAB for Club Map'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = coachStep + 1;
+                    setCoachStep(next);
+                    try {
+                      localStorage.setItem('club9_coach_step', String(next));
+                    } catch {}
+                  }}
+                  className="text-[10px] text-stone-400 hover:text-white underline cursor-pointer"
+                >
+                  {coachStep === 3
+                    ? lang === 'zh'
+                      ? '明白'
+                      : 'Got it'
+                    : lang === 'zh'
+                      ? '下一步'
+                      : 'Next'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Performance Stats Overlay (?stats=1) */}
+          {statsInfo && (
+            <div className="absolute left-3 bottom-3 pointer-events-none z-20 font-mono text-[11px] bg-black/85 px-2.5 py-1.5 rounded-lg border border-white/20 text-emerald-400 space-y-0.5 shadow-lg select-none">
+              <div>FPS: {statsInfo.fps}</div>
+              <div>Draw calls: {statsInfo.calls}</div>
+              <div>Triangles: {statsInfo.tris.toLocaleString()}</div>
+              <div>Textures: {statsInfo.tex}</div>
             </div>
           )}
 
@@ -2571,6 +2612,357 @@ export default function App() {
       )}
 
       {/* ==================================================================
+          4.5. CLUB MAP HUB MODAL (Radical-Minimal HUD Centerpiece)
+         ================================================================== */}
+      {showNavMenu && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto pointer-events-auto"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowNavMenu(false);
+          }}
+        >
+          <div className="club-panel w-[min(560px,94vw)] max-h-[92vh] overflow-y-auto p-5 sm:p-6 space-y-4 shadow-2xl border border-amber-400/30">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <span className="text-amber-400 font-bold text-base">🗺️</span>
+                <h2 className="font-display text-lg sm:text-xl font-extrabold text-amber-400 tracking-wider">
+                  {lang === 'zh' ? 'CLUB No.9 · 导览中心' : 'CLUB No.9 · LOUNGE HUB'}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNavMenu(false)}
+                className="club-btn text-xs py-1 px-2.5 text-stone-400 hover:text-white"
+                aria-label="Close Map"
+              >
+                ✕ <kbd className="club-kbd text-[10px]">ESC</kbd>
+              </button>
+            </div>
+
+            {/* Section 1: Lounge & Activity Destinations */}
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
+                <span>{lang === 'zh' ? '快速传送至机台' : 'Destinations & Mini-Games'}</span>
+                <span>{lang === 'zh' ? '全屏专注模式' : 'Focused Mode'}</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {/* Free roam */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    activateStation('none');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'none' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🚶</span>
+                    <span className="font-semibold">{t.loungeMode}</span>
+                  </span>
+                  <span className="text-[10px] text-stone-400">ROAM</span>
+                </button>
+
+                {/* Pool Table */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    enterPlayMode('pool');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'pool' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🎱</span>
+                    <span className="font-semibold">{t.stationPool}</span>
+                  </span>
+                  {pausedGames.pool ? (
+                    <span className="text-[10px] text-amber-400 font-extrabold px-1.5 py-0.5 rounded bg-amber-400/20">
+                      PAUSED
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-stone-400">PLAY</span>
+                  )}
+                </button>
+
+                {/* Ludo Table */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    enterPlayMode('ludo');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'ludo' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🎲</span>
+                    <span className="font-semibold">{t.stationLudo}</span>
+                  </span>
+                  {pausedGames.ludo ? (
+                    <span className="text-[10px] text-amber-400 font-extrabold px-1.5 py-0.5 rounded bg-amber-400/20">
+                      PAUSED
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-stone-400">PLAY</span>
+                  )}
+                </button>
+
+                {/* Darts Station */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    enterPlayMode('darts');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'darts' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🎯</span>
+                    <span className="font-semibold">{t.stationDarts}</span>
+                  </span>
+                  {pausedGames.darts ? (
+                    <span className="text-[10px] text-amber-400 font-extrabold px-1.5 py-0.5 rounded bg-amber-400/20">
+                      PAUSED
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-stone-400">PLAY</span>
+                  )}
+                </button>
+
+                {/* Liar's Dice */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    enterPlayMode('dice');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'dice' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🥤</span>
+                    <span className="font-semibold">{t.stationDice}</span>
+                  </span>
+                  {pausedGames.dice ? (
+                    <span className="text-[10px] text-amber-400 font-extrabold px-1.5 py-0.5 rounded bg-amber-400/20">
+                      PAUSED
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-stone-400">PLAY</span>
+                  )}
+                </button>
+
+                {/* Arcade Netplay */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    activateStation('arcade');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'arcade' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <Users className="w-3.5 h-3.5 text-cyan-300" />
+                    <span className="font-semibold">{t.stationArcade}</span>
+                  </span>
+                  <span className="text-[10px] text-cyan-400 font-bold">P2P</span>
+                </button>
+
+                {/* Bartender Ah-Jie */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    activateStation('bartender');
+                    setShowNavMenu(false);
+                  }}
+                  className={`club-btn text-xs py-2 px-3 text-left flex items-center justify-between ${
+                    station === 'bartender' ? 'club-btn-active' : ''
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🍺</span>
+                    <span className="font-semibold">{t.stationBartender}</span>
+                  </span>
+                  <span className="text-[10px] text-stone-400">CHAT</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Section 2: Isometric Camera Rig & 90° View Rotation */}
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
+                <span>{lang === 'zh' ? '等轴视角与视角控制' : 'Camera & Perspective'}</span>
+                <span>[Q / R / C / V]</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 bg-black/60 px-2 py-1 rounded-lg border border-white/15">
+                  {[
+                    { idx: 0, label: 'SW 0°' },
+                    { idx: 1, label: 'SE 90°' },
+                    { idx: 2, label: 'NE 180°' },
+                    { idx: 3, label: 'NW 270°' },
+                  ].map((ang) => (
+                    <button
+                      key={ang.idx}
+                      type="button"
+                      onClick={() => {
+                        worldRef.current?.setIsoAngleIndex(ang.idx);
+                        setIsoAngleIdx(ang.idx);
+                        audioRef.current.play('click');
+                      }}
+                      className={`text-xs py-1 px-2 rounded font-mono font-bold transition-colors ${
+                        isoAngleIdx === ang.idx
+                          ? 'bg-amber-400 text-stone-950 shadow-sm'
+                          : 'text-stone-300 hover:bg-white/10'
+                      }`}
+                    >
+                      {ang.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    worldRef.current?.recenterCam();
+                    audioRef.current.play('click');
+                  }}
+                  className="club-btn text-xs py-1.5 px-3 flex items-center gap-1.5"
+                  title="Recenter Camera on Avatar [C]"
+                >
+                  <span>🎯 {lang === 'zh' ? '镜头居中' : 'Recenter'}</span>
+                  <kbd className="club-kbd text-[10px]">C</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoungeCam((prev) => {
+                      const next = prev === 'isometric' ? 'fps' : 'isometric';
+                      if (worldRef.current) worldRef.current.loungeCamMode = next;
+                      return next;
+                    });
+                  }}
+                  className="club-btn text-xs py-1.5 px-3 flex items-center gap-1.5"
+                >
+                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                  <span>{loungeCam === 'isometric' ? t.isoView : t.fpsView}</span>
+                  <kbd className="club-kbd text-[10px]">V</kbd>
+                </button>
+              </div>
+            </div>
+
+            {/* Section 3: Jukebox Audio Station */}
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
+                <span>{lang === 'zh' ? '点唱机频道' : 'Jukebox Channels'}</span>
+                <span>CH.{jukeboxTrack + 1}</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {t.tracks.map((name, idx) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => {
+                      setJukeboxTrack(idx);
+                      audioRef.current.setTrack(idx);
+                      audioRef.current.play('click');
+                    }}
+                    className={`club-btn text-[11px] py-1.5 px-2 text-left truncate flex items-center gap-1.5 ${
+                      jukeboxTrack === idx ? 'club-btn-gold font-bold' : ''
+                    }`}
+                    title={name}
+                  >
+                    <Disc3 className="w-3 h-3 shrink-0" />
+                    <span className="truncate">{name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Section 4: Atmosphere & Display Settings */}
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+                {lang === 'zh' ? '画质与氛围' : 'Display & Atmosphere'}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="text-stone-300">{t.pixelScale}</span>
+                <div className="flex gap-1.5">
+                  {[
+                    [1.0, 'HD 1x'],
+                    [2.2, 'Retro 2x'],
+                    [3.5, 'Chunky 3.5x'],
+                  ].map(([val, label]) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => {
+                        const num = Number(val);
+                        setPixelScale(num);
+                        worldRef.current?.setPixelScale(num);
+                      }}
+                      className={`club-btn text-xs py-1 px-2.5 ${
+                        pixelScale === val ? 'club-btn-gold' : ''
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Section 5: Utilities & Quick Actions */}
+            <div className="pt-2 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
+                  className="club-btn text-xs py-1.5 px-3 font-semibold"
+                >
+                  🌐 {lang === 'zh' ? 'Switch to English' : '切换为中文'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCoachStep(1);
+                    try {
+                      localStorage.setItem('club9_coach_step', '1');
+                    } catch {}
+                    setShowNavMenu(false);
+                    showFlash(lang === 'zh' ? '新手引导已重置' : 'Tutorial Restarted', '', '#ffb84a');
+                  }}
+                  className="club-btn text-xs py-1.5 px-2.5 text-stone-400 hover:text-white"
+                  title="Replay First-Run Tutorial"
+                >
+                  {lang === 'zh' ? '重播新手引导' : 'Replay Tutorial'}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNavMenu(false);
+                  setShowCreditsModal(true);
+                }}
+                className="club-btn text-xs py-1.5 px-3 text-stone-400 hover:text-white"
+              >
+                {t.credits}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================
           5. PAUSE / SETTINGS / CREDITS MODAL
          ================================================================== */}
       {(appMode === 'paused' || showSettingsModal || showCreditsModal) && (
@@ -2609,6 +3001,23 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold">{lang === 'zh' ? '霓虹辉光' : 'Neon Bloom'}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBloomEnabled((v) => {
+                        const next = !v;
+                        worldRef.current?.setBloom(next);
+                        return next;
+                      });
+                    }}
+                    className={`club-btn text-xs py-1 px-3 ${bloomEnabled ? 'club-btn-gold' : ''}`}
+                  >
+                    {bloomEnabled ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold">{t.aimLines}</span>
                   <button
                     type="button"
@@ -2628,6 +3037,31 @@ export default function App() {
                   >
                     {closeUpCam ? 'ON' : 'OFF'}
                   </button>
+                </div>
+
+                {/* VRM Avatar Model */}
+                <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[11px] text-stone-300">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold">{t.avatarModel || 'User Model'}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[10px]">
+                      VRM 3D
+                    </span>
+                  </div>
+                  <label className="club-btn text-[11px] py-1 px-2.5 cursor-pointer hover:text-white">
+                    <span>{lang === 'zh' ? '更换 .vrm 模型' : 'Browse .vrm'}</span>
+                    <input
+                      type="file"
+                      accept=".vrm"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file && worldRef.current) {
+                          const url = URL.createObjectURL(file);
+                          worldRef.current.loadVrmAvatar(url);
+                        }
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
             )}

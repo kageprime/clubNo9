@@ -15,6 +15,12 @@ import {
   beginViewTransition,
   stepViewTransition,
 } from './viewTransition.ts';
+import {
+  checkLoungeCollision,
+  resolveLoungeSlide,
+  findLoungePath,
+  LOUNGE_OBSTACLES,
+} from '../scene/clubWorld.ts';
 
 test('View transition state machine hides lounge environment and overlays when entering Ludo, Pool, Darts, or Dice', () => {
   for (const gameId of ['ludo', 'pool', 'darts', 'dice'] as const) {
@@ -178,3 +184,136 @@ test('Rapier3D headless physics: Ludo DieTray, 8-Ball PoolSim, and DiceCupSim', 
   assert.ok(challenge.actual >= 0 && challenge.actual <= 10);
   cup.dispose();
 });
+
+test('Isometric 90-degree rotation angles and camera offset coordinates', () => {
+  // Test 4 cardinal 90-degree rotations (SW 0°, SE 90°, NE 180°, NW 270°)
+  let angleIdx = 0;
+  const rotate = (dir: 1 | -1) => {
+    angleIdx = (angleIdx + dir + 4) % 4;
+    return angleIdx;
+  };
+
+  assert.equal(rotate(1), 1); // 90° clockwise
+  assert.equal(rotate(1), 2); // 180°
+  assert.equal(rotate(1), 3); // 270°
+  assert.equal(rotate(1), 0); // 360° wraps back to 0°
+  assert.equal(rotate(-1), 3); // counter-clockwise wraps to 270°
+
+  // Trigonometric offset verification
+  const baseOx = -5.2;
+  const baseOz = 7.5;
+  const computeOffset = (idx: number) => {
+    const a = idx * (Math.PI / 2);
+    const cosA = Math.cos(a);
+    const sinA = Math.sin(a);
+    return {
+      x: baseOx * cosA - baseOz * sinA,
+      z: baseOx * sinA + baseOz * cosA,
+    };
+  };
+
+  const o0 = computeOffset(0);
+  assert.ok(Math.abs(o0.x - -5.2) < 1e-4);
+  assert.ok(Math.abs(o0.z - 7.5) < 1e-4);
+
+  const o1 = computeOffset(1); // 90°
+  assert.ok(Math.abs(o1.x - -7.5) < 1e-4);
+  assert.ok(Math.abs(o1.z - -5.2) < 1e-4);
+
+  const o2 = computeOffset(2); // 180°
+  assert.ok(Math.abs(o2.x - 5.2) < 1e-4);
+  assert.ok(Math.abs(o2.z - -7.5) < 1e-4);
+
+  const o3 = computeOffset(3); // 270°
+  assert.ok(Math.abs(o3.x - 7.5) < 1e-4);
+  assert.ok(Math.abs(o3.z - 5.2) < 1e-4);
+});
+
+test('Lounge AABB collision: detects obstacle bounding boxes and room boundary perimeter', () => {
+  // 1. Inside central pool table (minX: -1.48, maxX: 1.48, minZ: -0.65, maxZ: 1.15)
+  assert.equal(checkLoungeCollision(0.0, 0.25, 0.26), true);
+  // Just outside pool table bounds
+  assert.equal(checkLoungeCollision(0.0, -1.2, 0.26), false);
+
+  // 2. Former table area is now open, walkable lounge floor
+  assert.equal(checkLoungeCollision(-2.45, 2.35, 0.26), false);
+
+  // 3. Inside arcade row
+  assert.equal(checkLoungeCollision(-4.5, -1.0, 0.26), true);
+
+  // 4. Inside bar counter
+  assert.equal(checkLoungeCollision(4.0, 2.0, 0.26), true);
+
+  // 5. Open walkways
+  assert.equal(checkLoungeCollision(-0.9, 1.85, 0.26), false);
+  assert.equal(checkLoungeCollision(0.0, -2.5, 0.26), false);
+
+  // 6. Perimeter wall bounds
+  assert.equal(checkLoungeCollision(5.5, 0.0, 0.26), true); // beyond east wall
+  assert.equal(checkLoungeCollision(-5.5, 0.0, 0.26), true); // beyond west wall
+  assert.equal(checkLoungeCollision(0.0, 4.2, 0.26), true); // beyond south wall
+  assert.equal(checkLoungeCollision(0.0, -4.2, 0.26), true); // beyond north wall
+});
+
+test('Lounge slide resolution: decouples axes to allow smooth sliding along obstacle edges', () => {
+  // Walking towards pool table from west (-1.8, 0.0) trying to move (+0.5, +0.2)
+  // X motion is blocked by pool table (minX -1.48), but Z motion is clear
+  const startX = -1.8;
+  const startZ = 0.0;
+  const result = resolveLoungeSlide(startX, startZ, 0.5, 0.2, 0.26);
+  // X should not enter obstacle, but Z should have advanced
+  assert.ok(result.x < -1.48 - 0.2);
+  assert.equal(result.z, startZ + 0.2);
+
+  // Free motion in open space advances both axes
+  const freeResult = resolveLoungeSlide(0.0, -2.5, 0.1, 0.15, 0.26);
+  assert.ok(Math.abs(freeResult.x - 0.1) < 1e-4);
+  assert.ok(Math.abs(freeResult.z - (-2.35)) < 1e-4);
+});
+
+test('2D Grid A* pathfinding: routes around obstacles and finds valid walkable paths', () => {
+  // Route from front walkway to back walkway around pool table
+  const startX = 0.0;
+  const startZ = -2.5;
+  const targetX = 0.0;
+  const targetZ = 2.5;
+
+  const path = findLoungePath(startX, startZ, targetX, targetZ);
+  assert.ok(path.length > 2, 'Path should contain multiple waypoints navigating around table');
+
+  // Verify that all generated waypoints are walkable and do not intersect obstacles
+  for (const wp of path) {
+    assert.equal(
+      checkLoungeCollision(wp.x, wp.z, 0.2),
+      false,
+      `Waypoint (${wp.x}, ${wp.z}) should not collide with obstacles`,
+    );
+  }
+
+  // End of path should reach or be within close proximity to target
+  const lastPoint = path[path.length - 1];
+  const distToTarget = Math.hypot(lastPoint.x - targetX, lastPoint.z - targetZ);
+  assert.ok(distToTarget < 0.6, 'Last waypoint should be close to destination');
+});
+
+test('VRM user avatar: model file exists and contains valid VRM humanoid extensions', () => {
+  const fs = require('fs');
+  assert.ok(fs.existsSync('public/avatar.vrm'), 'public/avatar.vrm should exist');
+  assert.ok(fs.existsSync('public/8329890252317737768.vrm'), 'public/8329890252317737768.vrm should exist');
+
+  const buf = fs.readFileSync('public/avatar.vrm');
+  assert.ok(buf.length > 1000000, 'VRM file should have non-trivial size');
+  // Check GLB magic: 0x46546C67 ("glTF")
+  const magic = buf.readUInt32LE(0);
+  assert.equal(magic, 0x46546c67, 'VRM file must be valid binary glTF (GLB)');
+
+  const jsonLen = buf.readUInt32LE(12);
+  const jsonStr = buf.toString('utf8', 20, 20 + jsonLen);
+  const gltf = JSON.parse(jsonStr);
+
+  assert.ok(gltf.extensions?.VRM || gltf.extensions?.VRMC_vrm, 'glTF must have VRM extension');
+  if (gltf.extensions?.VRM) {
+    assert.ok(gltf.extensions.VRM.humanoid, 'VRM must contain humanoid bone mapping');
+  }
+});
+
