@@ -1,17 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --bg-void: #0a0705;
-  --panel-bg: rgba(18, 22, 40, 0.94);
-  --panel-hi: rgba(29, 36, 66, 0.96);
-  --panel-border: rgba(255, 255, 255, 0.14);
+  --bg-void: #090b10;
+  --panel-bg: rgba(14, 18, 30, 0.84);
+  --panel-hi: rgba(24, 32, 54, 0.9);
+  --panel-border: rgba(255, 255, 255, 0.12);
   --gold: #ffb84a;
   --cyan: #54e0ee;
   --pink: #ff5ec4;
   --green: #5fe08a;
   --red: #ff6a5a;
-  --text-main: #f1efe6;
-  --text-dim: #8d92a8;
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
   --font-display: "Chakra Petch", "Plus Jakarta Sans", "Noto Sans SC", sans-serif;
   --font-body: "Plus Jakarta Sans", "Noto Sans SC", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
@@ -45,55 +45,63 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Premium Dark Glassmorphism */
 .club-panel {
   background: var(--panel-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .club-btn {
   font-family: var(--font-body);
   font-weight: 700;
   color: var(--text-main);
-  background: #252e52;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 9px;
+  background: rgba(30, 41, 69, 0.75);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
   cursor: pointer;
   padding: 8px 14px;
-  box-shadow: 0 3px 0 #0e1226, 0 5px 12px rgba(0, 0, 0, 0.4);
-  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.15s;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .club-btn:hover {
-  background: #323e6e;
+  background: rgba(45, 60, 100, 0.9);
   color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
 }
 
 .club-btn:active {
-  transform: translateY(2px);
-  box-shadow: 0 1px 0 #0e1226;
+  transform: translateY(1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .club-btn-gold {
-  color: #1b1405;
-  background: #ffb84a;
+  color: #0f0b04;
+  background: linear-gradient(135deg, #ffc86b, #ffaa29);
   border-color: #ffe3a0;
-  box-shadow: 0 4px 0 #9c620c, 0 8px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 4px 18px rgba(255, 170, 41, 0.35);
 }
 
 .club-btn-gold:hover {
-  background: #ffc96b;
-  color: #1b1405;
+  background: linear-gradient(135deg, #ffd385, #ffb84a);
+  color: #0a0702;
+  box-shadow: 0 6px 22px rgba(255, 170, 41, 0.5);
+  transform: translateY(-1px);
 }
 
 .club-btn-active {
-  color: #0b1622;
-  background: var(--cyan);
-  border-color: #aef4fc;
-  box-shadow: 0 3px 0 #177885;
+  color: #04141a;
+  background: linear-gradient(135deg, #70f3ff, #38d6e8);
+  border-color: #bbf9ff;
+  box-shadow: 0 4px 18px rgba(84, 224, 238, 0.45);
 }
 
 kbd.club-kbd {
@@ -102,36 +110,35 @@ kbd.club-kbd {
   font-size: 11px;
   font-weight: 700;
   color: #ffffff;
-  background: rgba(255, 255, 255, 0.14);
-  padding: 1px 6px;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 2px 7px;
   margin: 0 3px;
-  border-radius: 5px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
   border-bottom-width: 2px;
 }
 
-@keyframes floatBob {
-  from {
-    transform: translate(-50%, -100%) translateY(0px);
-  }
-  to {
-    transform: translate(-50%, -100%) translateY(-5px);
-  }
-}
-
+/* 3D Projected pawn selection tags */
 .pawn-tag {
-  position: fixed;
-  transform: translate(-50%, -100%);
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #0b0f19;
   font-family: var(--font-mono);
-  font-size: 15px;
   font-weight: 800;
-  color: #1b1405;
-  background: #ffb84a;
-  padding: 2px 9px;
-  border-radius: 8px;
-  border: 2px solid #ffffff;
-  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.55);
-  animation: floatBob 0.55s ease-in-out infinite alternate;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #000000;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
   pointer-events: auto;
   cursor: pointer;
+  transition: transform 0.12s;
+}
+
+.pawn-tag:hover {
+  transform: translate(-50%, -50%) scale(1.18);
 }

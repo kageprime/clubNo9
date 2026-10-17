@@ -64,7 +64,7 @@ export class PixelPostProcessor {
   quadScene: THREE.Scene;
   quadCam: THREE.OrthographicCamera;
   material: THREE.ShaderMaterial;
-  pixelDivisor = 2.5; // 1 = HD crisp, 2.5 = signature 3D pixel art, 4 = chunky retro
+  pixelDivisor = 1.0; // 1.0 = Native full-resolution crisp PBR, 2.5 = pixelated retro
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.renderer = renderer;

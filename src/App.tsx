@@ -68,6 +68,8 @@ export default function App() {
     autoStart ? (initialStation !== 'none' ? 'station' : 'lounge') : 'title',
   );
   const [station, setStation] = useState<StationId>(autoStart ? initialStation : 'none');
+  const [stationViewMode, setStationViewMode] = useState<'view' | 'play'>('view');
+  const [tablePreview, setTablePreview] = useState<StationId | null>(null);
   const [loungeCam, setLoungeCam] = useState<'isometric' | 'fps'>('isometric');
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -75,7 +77,7 @@ export default function App() {
   const [showLudoConfig, setShowLudoConfig] = useState(false);
 
   // Settings
-  const [pixelScale, setPixelScale] = useState<number>(2.2);
+  const [pixelScale, setPixelScale] = useState<number>(1.0);
   const [showAimLines, setShowAimLines] = useState<boolean>(true);
   const [closeUpCam, setCloseUpCam] = useState<boolean>(true);
   const [muted, setMuted] = useState<boolean>(false);
@@ -205,6 +207,8 @@ export default function App() {
   modeRef.current = appMode;
   const stationRef = useRef(station);
   stationRef.current = station;
+  const viewModeRef = useRef<'view' | 'play'>('view');
+  viewModeRef.current = stationViewMode;
   const langRef = useRef(lang);
   langRef.current = lang;
   const showAimRef = useRef(showAimLines);
@@ -529,9 +533,10 @@ export default function App() {
 
   // ------------------------------------------------------------------ ENTER / SWITCH STATIONS
   const activateStation = useCallback(
-    (target: StationId) => {
+    (target: StationId, autoPlay = false) => {
       audioRef.current.unlock();
       audioRef.current.play('tick');
+      setTablePreview(null);
       if (target === 'bartender') {
         audioRef.current.play('pourBeer');
         worldRef.current?.triggerBartenderToast();
@@ -559,6 +564,7 @@ export default function App() {
         stationRef.current = 'none';
         modeRef.current = 'lounge';
         setStation('none');
+        setStationViewMode('view');
         setAppMode('lounge');
         worldRef.current?.snapCamera('lounge', 'none');
         return;
@@ -566,6 +572,7 @@ export default function App() {
       stationRef.current = target;
       modeRef.current = 'station';
       setStation(target);
+      setStationViewMode(autoPlay ? 'play' : 'view');
       setAppMode('station');
       if (target === 'ludo' && !ludoCtrlRef.current.runId) {
         startLudoMatch(ludoSeats, ludoDiff);
@@ -602,6 +609,7 @@ export default function App() {
   // ------------------------------------------------------------------ CHARGE & STRIKE / THROW HANDLERS
   const beginCharge = useCallback(() => {
     if (modeRef.current === 'paused' || modeRef.current === 'title') return;
+    if (viewModeRef.current !== 'play') return;
     const st = stationRef.current;
     if (st === 'ludo' && !ludoCtrlRef.current.canRoll) return;
     if (st === 'pool' && poolSimRef.current?.phase !== 'aiming') return;
@@ -727,6 +735,26 @@ export default function App() {
           if (keys.has('KeyA') || keys.has('ArrowLeft')) dx -= 1;
           if (keys.has('KeyD') || keys.has('ArrowRight')) dx += 1;
 
+          // Click-to-move navigation support
+          if (dx === 0 && dz === 0 && world.playerTarget) {
+            const tx = world.playerTarget.x - world.player.x;
+            const tz = world.playerTarget.z - world.player.z;
+            const dist = Math.hypot(tx, tz);
+            if (dist > 0.1) {
+              dx = tx / dist;
+              dz = tz / dist;
+              const targetYaw = Math.atan2(dx, dz);
+              let diff = (targetYaw - world.player.yaw) % (Math.PI * 2);
+              if (diff < -Math.PI) diff += Math.PI * 2;
+              if (diff > Math.PI) diff -= Math.PI * 2;
+              world.player.yaw += diff * 0.22;
+            } else {
+              world.clearMoveTarget();
+            }
+          } else if (dx !== 0 || dz !== 0) {
+            world.clearMoveTarget();
+          }
+
           if (dx !== 0 || dz !== 0) {
             const len = Math.hypot(dx, dz);
             dx /= len;
@@ -790,7 +818,9 @@ export default function App() {
           if (nearNpc) {
             const proj = world.projectCoords(nearNpc.x, 1.42, nearNpc.z);
             const msg = NPC_CHATTER[nearNpc.chatterIdx % NPC_CHATTER.length][langRef.current];
-            setNpcBubble({ text: msg, x: proj.x, y: proj.y, visible: proj.ok });
+            const clampedY = Math.max(90, Math.min(window.innerHeight - 190, proj.y));
+            const clampedX = Math.max(130, Math.min(window.innerWidth - 130, proj.x));
+            setNpcBubble({ text: msg, x: clampedX, y: clampedY, visible: proj.ok });
           } else {
             setNpcBubble((prev) => (prev.visible ? { ...prev, visible: false } : prev));
           }
@@ -1013,13 +1043,32 @@ export default function App() {
           });
         } else if (code === 'KeyE' || code === 'Enter') {
           if (nearbyHotspot !== 'none') {
-            activateStation(nearbyHotspot);
+            activateStation(nearbyHotspot, false);
           }
         }
         return;
       }
 
-      // Station-specific shortcuts
+      // Station View Mode: Space/Enter starts playing; Esc/V/E exits to lounge
+      if (viewModeRef.current === 'view') {
+        if (code === 'Space' || code === 'Enter') {
+          e.preventDefault();
+          setStationViewMode('play');
+          showFlash(
+            langRef.current === 'zh' ? '入座开始游戏' : 'Game Started',
+            langRef.current === 'zh' ? '按键或点击进行操作' : 'Use controls or mouse to play',
+            '#5fe08a',
+          );
+          return;
+        }
+        if (code === 'Escape' || code === 'KeyV' || code === 'KeyE') {
+          e.preventDefault();
+          activateStation('none');
+          return;
+        }
+      }
+
+      // Station-specific shortcuts in active play mode
       if (code === 'Space' && !e.repeat) {
         e.preventDefault();
         beginCharge();
@@ -1123,14 +1172,41 @@ export default function App() {
     audioRef.current.unlock();
     const world = worldRef.current;
     if (!world) return;
-    dragRef.current = { x: e.clientX, y: e.clientY };
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ndc = {
+      x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      y: -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    };
+
+    if (station === 'none') {
+      const clickedStation = world.pickStationAt(ndc);
+      if (clickedStation) {
+        // Move near that station and open it in VIEW mode (no forced play)
+        const hs = STATION_HOTSPOTS.find((h) => h.id === clickedStation);
+        if (hs) {
+          world.setMoveTarget(hs.x, hs.z);
+        }
+        activateStation(clickedStation, false);
+        return;
+      }
+      // Click-to-move on floor
+      const floorHit = world.pickFloorPoint(ndc);
+      if (floorHit) {
+        world.setMoveTarget(floorHit.x, floorHit.z);
+        dragRef.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
+    } else {
+      dragRef.current = { x: e.clientX, y: e.clientY };
+      if (station === 'ludo' && stationViewMode === 'play') {
+        const pw = world.pickLudoPawn(ndc);
+        if (pw && pw.c === ludoStateRef.current.turn) {
+          chooseLudoMoveForToken(pw.t);
+        }
+      }
+    }
 
     if (station === 'ludo') {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const ndc = {
-        x: ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        y: -((e.clientY - rect.top) / rect.height) * 2 + 1,
-      };
       const pw = world.pickLudoPawn(ndc);
       if (pw && pw.c === ludoStateRef.current.turn) {
         chooseLudoMoveForToken(pw.t);
@@ -1387,15 +1463,15 @@ export default function App() {
       {appMode !== 'title' && (
         <div className="fixed inset-0 pointer-events-none z-30">
           {/* Top-Left Brand & Active Mode Indicator */}
-          <div className="absolute left-4 top-4 flex items-center gap-2 pointer-events-auto">
-            <div className="club-panel px-3.5 py-2 flex items-center gap-3">
-              <span className="font-display font-bold text-amber-400 tracking-wider text-sm">
+          <div className="absolute left-2.5 sm:left-4 top-2.5 sm:top-4 flex items-center gap-1.5 pointer-events-auto max-w-[55vw] sm:max-w-none">
+            <div className="club-panel px-2.5 sm:px-3.5 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3 truncate">
+              <span className="font-display font-bold text-amber-400 tracking-wider text-xs sm:text-sm shrink-0">
                 {t.clubTitle}
               </span>
-              <span className="text-stone-500">·</span>
-              <span className="text-xs font-semibold text-cyan-300">
+              <span className="text-stone-500 hidden sm:inline">·</span>
+              <span className="text-[11px] sm:text-xs font-semibold text-cyan-300 truncate">
                 {station === 'none'
-                  ? `${t.loungeMode} (${loungeCam === 'isometric' ? t.isoView : t.fpsView})`
+                  ? `${t.loungeMode}`
                   : station === 'ludo'
                     ? t.stationLudo
                     : station === 'pool'
@@ -1409,22 +1485,31 @@ export default function App() {
             </div>
 
             {station !== 'none' && (
-              <button
-                type="button"
-                onClick={() => activateStation('none')}
-                className="club-btn text-xs py-2 px-3"
-              >
-                ← {t.leaveStation}
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setStationViewMode((m) => (m === 'view' ? 'play' : 'view'))}
+                  className="club-btn text-xs py-1.5 sm:py-2 px-2.5 font-bold"
+                >
+                  {stationViewMode === 'view' ? '🎮 Play' : '👁️ View'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => activateStation('none')}
+                  className="club-btn text-xs py-1.5 sm:py-2 px-2.5 sm:px-3 shrink-0"
+                >
+                  ← <span className="hidden sm:inline">{t.leaveStation}</span>
+                </button>
+              </div>
             )}
           </div>
 
           {/* Top-Right Compact Utility Buttons */}
-          <div className="absolute right-4 top-4 flex items-center gap-2 pointer-events-auto">
+          <div className="absolute right-2.5 sm:right-4 top-2.5 sm:top-4 flex items-center gap-1.5 pointer-events-auto">
             <button
               type="button"
               onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
-              className="club-btn text-xs py-2 px-2.5"
+              className="club-btn text-xs py-1.5 sm:py-2 px-2 sm:px-2.5"
               aria-label="Toggle Language"
             >
               {lang === 'zh' ? 'EN' : '中文'}
@@ -1432,7 +1517,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => activateStation('jukebox')}
-              className="club-btn text-xs py-2 px-2.5 flex items-center gap-1.5"
+              className="club-btn text-xs py-1.5 sm:py-2 px-2 sm:px-2.5 flex items-center gap-1"
               aria-label="Switch Jukebox Track"
               title={t.tracks[jukeboxTrack]}
             >
@@ -1448,26 +1533,26 @@ export default function App() {
                   return next;
                 });
               }}
-              className="club-btn py-2 px-2.5"
+              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5"
               aria-label={t.soundMute}
             >
-              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+              {muted ? <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />}
             </button>
             <button
               type="button"
               onClick={() => setShowSettingsModal(true)}
-              className="club-btn py-2 px-2.5"
+              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5"
               aria-label={t.settings}
             >
-              <Settings className="w-4 h-4" />
+              <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
             <button
               type="button"
               onClick={() => setAppMode((m) => (m === 'paused' ? 'lounge' : 'paused'))}
-              className="club-btn py-2 px-2.5"
+              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5 hidden sm:inline-flex"
               aria-label={t.pauseTitle}
             >
-              <Pause className="w-4 h-4" />
+              <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
           </div>
 
@@ -1627,30 +1712,148 @@ export default function App() {
             </div>
           )}
 
+          {/* Station View / Inspection Card (Click table to VIEW, then choose to play) */}
+          {station !== 'none' && station !== 'arcade' && stationViewMode === 'view' && (
+            <div className="absolute left-1/2 bottom-20 sm:bottom-24 -translate-x-1/2 club-panel p-4 md:p-5 w-[min(94vw,480px)] flex flex-col gap-3 pointer-events-auto shadow-2xl z-30 border border-amber-400/35">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl sm:text-4xl">
+                    {station === 'pool'
+                      ? '🎱'
+                      : station === 'ludo'
+                        ? '🎲'
+                        : station === 'darts'
+                          ? '🎯'
+                          : '🥤'}
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-display font-bold text-base sm:text-lg text-amber-300">
+                        {lang === 'zh'
+                          ? STATION_HOTSPOTS.find((h) => h.id === station)?.labelZh
+                          : STATION_HOTSPOTS.find((h) => h.id === station)?.labelEn}
+                      </h3>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                        {lang === 'zh' ? '观摩巡视中' : 'VIEWING'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-stone-300 mt-0.5">
+                      {station === 'pool'
+                        ? (lang === 'zh' ? '中式八球 · 57.2mm标准球物理碰触 · 拖拽鼠标旋转视角巡视' : 'Chinese 8-Ball · 57.2mm Physics · Drag to Orbit')
+                        : station === 'ludo'
+                          ? (lang === 'zh' ? '4人对战飞行棋 · 真实物理骰盅掷骰 · 拖拽旋转观察棋盘' : '4-Player Ludo · Physical Tumbling Dice Tray · Drag to Orbit')
+                          : station === 'darts'
+                            ? (lang === 'zh' ? '20分区标准飞镖 · 钨钢镖身与风向物理' : '20-Zone Regulation Sisal Dartboard')
+                            : (lang === 'zh' ? '大话骰盅 · 5粒真实物理骰子摇晃对决' : "Liar's Dice · 5 Shaker Dice Showdown")}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => activateStation('none')}
+                  className="text-stone-400 hover:text-white px-2 py-1 text-sm rounded cursor-pointer"
+                  title="Close View"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStationViewMode('play');
+                    showFlash(
+                      lang === 'zh' ? '入座开始游戏' : 'Game Started',
+                      lang === 'zh' ? '按键或点击进行操作' : 'Use controls or mouse to play',
+                      '#5fe08a',
+                    );
+                  }}
+                  className="club-btn club-btn-gold flex-1 text-sm py-2.5 font-extrabold flex justify-center items-center gap-2 cursor-pointer shadow-lg"
+                >
+                  <span>🎮 {lang === 'zh' ? '入座开始游戏' : 'Sit Down & Play'}</span>
+                  <kbd className="club-kbd text-[10px]">SPACE</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => activateStation('none')}
+                  className="club-btn flex-1 text-xs py-2.5 flex justify-center items-center gap-1 cursor-pointer"
+                >
+                  <span>🚶 {lang === 'zh' ? '返回全景漫步' : 'Back to Lounge'}</span>
+                  <kbd className="club-kbd text-[10px]">ESC</kbd>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Mobile Touch Virtual D-Pad (Effortless Mobile Walking) */}
+          {station === 'none' && appMode === 'lounge' && (
+            <div className="absolute left-4 bottom-24 pointer-events-auto flex flex-col items-center gap-1.5 md:hidden z-20 opacity-80 hover:opacity-100 transition-opacity">
+              <button
+                type="button"
+                onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyW'); }}
+                onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyW'); }}
+                onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyW'); }}
+                className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
+              >
+                ▲
+              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyA'); }}
+                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyA'); }}
+                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyA'); }}
+                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
+                >
+                  ◀
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyS'); }}
+                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyS'); }}
+                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyS'); }}
+                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
+                >
+                  ▼
+                </button>
+                <button
+                  type="button"
+                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyD'); }}
+                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyD'); }}
+                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyD'); }}
+                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Lounge Proximity Interaction Prompt */}
           {station === 'none' && nearbyHotspot !== 'none' && (
             <div
-              className={`absolute left-1/2 -translate-x-1/2 pointer-events-auto transition-all ${
-                dockCollapsed ? 'bottom-14' : 'bottom-28'
+              className={`absolute left-1/2 -translate-x-1/2 pointer-events-auto transition-all z-20 ${
+                dockCollapsed ? 'bottom-16 sm:bottom-14' : 'bottom-36 sm:bottom-28'
               }`}
             >
               <button
                 type="button"
-                onClick={() => activateStation(nearbyHotspot)}
-                className="club-btn club-btn-gold px-5 py-2.5 text-sm flex items-center gap-2"
+                onClick={() => activateStation(nearbyHotspot, false)}
+                className="club-btn club-btn-gold px-4 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm flex items-center gap-2 shadow-xl whitespace-nowrap cursor-pointer"
               >
                 <span>
                   {lang === 'zh'
-                    ? STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh
-                    : STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}
+                    ? `观摩 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
+                    : `View ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`}
                 </span>
-                <kbd className="club-kbd">E</kbd>
+                <kbd className="club-kbd text-[10px]">E</kbd>
               </button>
             </div>
           )}
 
-          {/* Power Charge Bar & Hold-to-Throw / Strike Action above Bottom Dock */}
-          {(station === 'ludo' || station === 'pool' || station === 'darts') && (
+          {/* Power Charge Bar & Hold-to-Throw / Strike Action above Bottom Dock (Active Play Mode Only) */}
+          {(station === 'ludo' || station === 'pool' || station === 'darts') && stationViewMode === 'play' && (
             <div
               className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-3 pointer-events-auto transition-all ${
                 dockCollapsed ? 'bottom-14' : 'bottom-24'
@@ -1696,8 +1899,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Dice Cup Action Strip */}
-          {station === 'dice' && (
+          {/* Dice Cup Action Strip (Active Play Mode Only) */}
+          {station === 'dice' && stationViewMode === 'play' && (
             <div
               className={`absolute left-1/2 -translate-x-1/2 club-panel px-4 py-2.5 flex flex-wrap items-center justify-center gap-3 pointer-events-auto transition-all ${
                 dockCollapsed ? 'bottom-14' : 'bottom-24'
@@ -1864,7 +2067,18 @@ export default function App() {
                 </div>
 
                 {/* Context-Sensitive Station Tools */}
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {station !== 'none' && station !== 'arcade' && (
+                    <button
+                      type="button"
+                      onClick={() => setStationViewMode((m) => (m === 'view' ? 'play' : 'view'))}
+                      className={`club-btn text-xs py-1.5 px-2.5 font-bold flex items-center gap-1 ${
+                        stationViewMode === 'play' ? 'club-btn-gold' : ''
+                      }`}
+                    >
+                      {stationViewMode === 'view' ? '🎮 Play Game' : '👁️ View Mode'}
+                    </button>
+                  )}
                   {station === 'none' && (
                     <button
                       type="button"

@@ -27,6 +27,8 @@ import {
   lobbyMarqueeTex,
   openNeonTex,
   drawArcadeScreen,
+  orientalRugTex,
+  vintagePosterTex,
 } from './textures.ts';
 import { PixelPostProcessor } from './pixelShader.ts';
 
@@ -156,6 +158,8 @@ export class ClubWorld {
     mugMesh: null as THREE.Object3D | null,
     beerToastTimer: 0,
   };
+  playerTarget: { x: number; z: number } | null = null;
+  moveTargetRing!: THREE.Mesh;
   guestGrp = new THREE.Group();
 
   // Ludo table state
@@ -317,45 +321,181 @@ export class ClubWorld {
   private _buildLoungeArchitecture(): void {
     const floorMat = new THREE.MeshStandardMaterial({
       map: woodPlankTex(101, [7, 5]),
-      roughness: 0.75,
+      roughness: 0.45,
+      metalness: 0.08,
     });
     const floor = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.2, 8.8), floorMat);
     floor.position.set(0, -0.1, 0);
     floor.receiveShadow = true;
     this.scene.add(floor);
 
-    const wallWood = new THREE.MeshStandardMaterial({
-      map: walnutTrimTex([76, 45, 24], 19, [4, 2]),
-      roughness: 0.8,
+    // Click-to-move pulsing destination ring
+    this.moveTargetRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.12, 0.22, 28),
+      new THREE.MeshBasicMaterial({ color: 0x54e0ee, side: THREE.DoubleSide, transparent: true, opacity: 0 }),
+    );
+    this.moveTargetRing.rotation.x = -Math.PI / 2;
+    this.moveTargetRing.position.y = 0.012;
+    this.scene.add(this.moveTargetRing);
+
+    const darkWainscotMat = new THREE.MeshStandardMaterial({
+      map: walnutTrimTex([55, 30, 16], 33, [3, 1]),
+      roughness: 0.55,
+      metalness: 0.05,
     });
     const upperWallMat = new THREE.MeshStandardMaterial({
       map: walnutTrimTex([98, 60, 34], 23, [5, 2]),
-      roughness: 0.85,
+      roughness: 0.8,
+    });
+    const mouldingMat = new THREE.MeshStandardMaterial({
+      color: 0x3d2010,
+      roughness: 0.5,
     });
 
     // Back-left wall (behind arcade cabinets, x = -5.6)
     const wallLeft = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.3, 8.8), upperWallMat);
     wallLeft.position.set(-5.65, 2.15, 0);
     wallLeft.receiveShadow = true;
-    this.scene.add(wallLeft);
+    const wainscotLeft = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.25, 8.8), darkWainscotMat);
+    wainscotLeft.position.set(-5.64, 0.625, 0);
+    this.scene.add(wallLeft, wainscotLeft);
 
     // Back-right wall (behind neon sign & dartboard, z = -4.25)
     const wallBack = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.3, 0.3), upperWallMat);
     wallBack.position.set(0, 2.15, -4.25);
     wallBack.receiveShadow = true;
-    this.scene.add(wallBack);
+    const wainscotBack = new THREE.Mesh(new THREE.BoxGeometry(11.6, 1.25, 0.32), darkWainscotMat);
+    wainscotBack.position.set(0, 0.625, -4.24);
+    const chairRail = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.06, 0.36), mouldingMat);
+    chairRail.position.set(0, 1.25, -4.23);
+    const baseboard = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.12, 0.36), mouldingMat);
+    baseboard.position.set(0, 0.06, -4.23);
+    this.scene.add(wallBack, wainscotBack, chairRail, baseboard);
 
     // Right wall (fireplace & back bar, x = +5.65)
     const wallRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.3, 8.8), upperWallMat);
     wallRight.position.set(5.65, 2.15, 0);
     wallRight.receiveShadow = true;
-    this.scene.add(wallRight);
+    const wainscotRight = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.25, 8.8), darkWainscotMat);
+    wainscotRight.position.set(5.64, 0.625, 0);
+    this.scene.add(wallRight, wainscotRight);
 
     // Vertical timber pilasters along walls for architectural depth
+    const pilasterMat = new THREE.MeshStandardMaterial({
+      map: walnutTrimTex([76, 45, 24], 19, [2, 2]),
+      roughness: 0.65,
+    });
     for (const x of [-5.2, -2.5, 0.5, 3.6, 5.4]) {
-      const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.22, 4.35, 0.22), wallWood);
+      const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.22, 4.35, 0.22), pilasterMat);
       pilaster.position.set(x, 2.15, -4.08);
       this.scene.add(pilaster);
+    }
+
+    // 1. Ornate Persian Rugs on Floor (Pool Table, Hearth, and Ludo)
+    const poolRug = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.6, 2.4),
+      new THREE.MeshStandardMaterial({
+        map: orientalRugTex('crimson'),
+        roughness: 0.92,
+        metalness: 0.02,
+      }),
+    );
+    poolRug.rotation.x = -Math.PI / 2;
+    poolRug.position.set(POOL_ORIGIN.x, 0.002, POOL_ORIGIN.z);
+    poolRug.receiveShadow = true;
+    this.scene.add(poolRug);
+
+    const hearthRug = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.3, 1.45),
+      new THREE.MeshStandardMaterial({
+        map: orientalRugTex('emerald'),
+        roughness: 0.92,
+        metalness: 0.02,
+      }),
+    );
+    hearthRug.rotation.x = -Math.PI / 2;
+    hearthRug.rotation.z = Math.PI / 2;
+    hearthRug.position.set(3.8, 0.002, -1.25);
+    hearthRug.receiveShadow = true;
+    this.scene.add(hearthRug);
+
+    const ludoRug = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, 1.8),
+      new THREE.MeshStandardMaterial({
+        map: orientalRugTex('crimson'),
+        roughness: 0.92,
+        metalness: 0.02,
+      }),
+    );
+    ludoRug.rotation.x = -Math.PI / 2;
+    ludoRug.position.set(LUDO_ORIGIN.x, 0.002, LUDO_ORIGIN.z);
+    ludoRug.receiveShadow = true;
+    this.scene.add(ludoRug);
+
+    // 2. Ceiling Dark Oak Architectural Beams
+    const beamMat = new THREE.MeshStandardMaterial({
+      map: walnutTrimTex([60, 34, 18], 5, [3, 1]),
+      roughness: 0.6,
+    });
+    for (const z of [-3.1, -1.1, 0.9, 2.9]) {
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.22, 0.28), beamMat);
+      beam.position.set(0, 4.25, z);
+      this.scene.add(beam);
+    }
+
+    // 3. Framed High-Res Vintage Posters on Walls
+    const posterMat1 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('billiards'), roughness: 0.35 });
+    const p1 = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.15), posterMat1);
+    p1.position.set(3.4, 2.75, -4.07);
+    this.scene.add(p1);
+
+    const posterMat2 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('jazz'), roughness: 0.35 });
+    const p2 = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.15), posterMat2);
+    p2.position.set(-3.2, 2.75, -4.07);
+    this.scene.add(p2);
+
+    const posterMat3 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('cocktail'), roughness: 0.35 });
+    const p3 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 1.05), posterMat3);
+    p3.rotation.y = -Math.PI / 2;
+    p3.position.set(5.48, 2.8, -3.1);
+    this.scene.add(p3);
+
+    // 4. Corner Tavern Brass Planter with Lush Greenery (between jukebox and wall)
+    const brassMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.75, roughness: 0.25 });
+    const potGrp = new THREE.Group();
+    potGrp.position.set(-4.85, 0, -3.85);
+    const pot = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.18, 0.44, 12),
+      brassMat,
+    );
+    pot.position.y = 0.22;
+    pot.castShadow = true;
+    potGrp.add(pot);
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x1d6634, roughness: 0.5, side: THREE.DoubleSide });
+    for (let i = 0; i < 7; i++) {
+      const ang = (i / 7) * Math.PI * 2;
+      const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.62, 5), leafMat);
+      leaf.rotation.set(0.42 * Math.cos(ang), ang, 0.42 * Math.sin(ang));
+      leaf.position.set(Math.cos(ang) * 0.11, 0.55, Math.sin(ang) * 0.11);
+      potGrp.add(leaf);
+    }
+    this.scene.add(potGrp);
+
+    // Warm brass wall sconces along back wall
+    for (const sx of [-3.8, 2.05]) {
+      const sconceArm = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.18, 8), brassMat);
+      sconceArm.rotation.x = Math.PI / 2;
+      sconceArm.position.set(sx, 2.45, -4.05);
+
+      const sconceShade = new THREE.Mesh(
+        new THREE.ConeGeometry(0.12, 0.16, 12, 1, true),
+        new THREE.MeshStandardMaterial({ color: 0xffe6a3, roughness: 0.4, side: THREE.DoubleSide }),
+      );
+      sconceShade.position.set(sx, 2.52, -3.96);
+
+      const sconceLight = new THREE.PointLight(0xffb84a, 6.0, 4.2, 1.6);
+      sconceLight.position.set(sx, 2.48, -3.9);
+      this.scene.add(sconceArm, sconceShade, sconceLight);
     }
   }
 
@@ -743,16 +883,33 @@ export class ClubWorld {
     rightRail.position.x = W / 2 + rThick / 2;
     g.add(topRail, botRail, leftRail, rightRail);
 
+    // Diamond mother-of-pearl sights along rails
+    const pearlMat = new THREE.MeshStandardMaterial({
+      color: 0xfaf8f5,
+      roughness: 0.2,
+      metalness: 0.1,
+    });
+    for (let i = 1; i <= 3; i++) {
+      const u = (i / 4) * (W / 2 - 0.1);
+      [-1, 1].forEach((side) => {
+        const topSight = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.004, 8), pearlMat);
+        topSight.position.set(side * u, rHeight / 2 + 0.012, -D / 2 - rThick / 2);
+        const botSight = topSight.clone();
+        botSight.position.z = D / 2 + rThick / 2;
+        g.add(topSight, botSight);
+      });
+    }
+
     // 6 Pockets & brass corner plates
     POCKETS.forEach(([px, pz]) => {
       const hole = new THREE.Mesh(
-        new THREE.CircleGeometry(POOL_TABLE.pocketRadius, 16),
+        new THREE.CircleGeometry(POOL_TABLE.pocketRadius, 24),
         new THREE.MeshBasicMaterial({ color: 0x050507 }),
       );
       hole.rotation.x = -Math.PI / 2;
       hole.position.set(px, 0.003, pz);
       const rim = new THREE.Mesh(
-        new THREE.RingGeometry(POOL_TABLE.pocketRadius * 0.95, POOL_TABLE.pocketRadius * 1.32, 16),
+        new THREE.RingGeometry(POOL_TABLE.pocketRadius * 0.95, POOL_TABLE.pocketRadius * 1.32, 24),
         brassMat,
       );
       rim.rotation.x = -Math.PI / 2;
@@ -763,12 +920,12 @@ export class ClubWorld {
     // Overhead green-shaded brass billiard lamp
     const lampGrp = new THREE.Group();
     lampGrp.position.set(0, 1.85, 0);
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.35, 8), brassMat);
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.35, 12), brassMat);
     bar.rotation.z = Math.PI / 2;
     lampGrp.add(bar);
     for (const sx of [-0.5, 0, 0.5]) {
       const shade = new THREE.Mesh(
-        new THREE.ConeGeometry(0.22, 0.18, 12, 1, true),
+        new THREE.ConeGeometry(0.22, 0.18, 18, 1, true),
         new THREE.MeshStandardMaterial({
           color: 0x117a43,
           roughness: 0.35,
@@ -780,13 +937,15 @@ export class ClubWorld {
     }
     g.add(lampGrp);
 
-    // 16 Pool Ball Meshes
-    const ballGeo = new THREE.SphereGeometry(POOL_TABLE.ballRadius, 18, 14);
+    // 16 High-Gloss Lacquered Billiard Ball Meshes (MeshPhysicalMaterial with clearcoat!)
+    const ballGeo = new THREE.SphereGeometry(POOL_TABLE.ballRadius, 32, 24);
     for (let id = 0; id < 16; id++) {
-      const mat = new THREE.MeshStandardMaterial({
+      const mat = new THREE.MeshPhysicalMaterial({
         map: poolBallTex(id),
-        roughness: 0.16,
-        metalness: 0.06,
+        roughness: 0.08,
+        metalness: 0.04,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.06,
       });
       const mesh = new THREE.Mesh(ballGeo, mat);
       mesh.castShadow = true;
@@ -795,20 +954,36 @@ export class ClubWorld {
       this.poolBallMeshes.push(mesh);
     }
 
-    // Interactive Cue Stick
+    // High-Detail Interactive Cue Stick with Irish linen grip & chalked tip
     const cueShaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0055, 0.011, 1.35, 10),
-      new THREE.MeshStandardMaterial({ color: 0xe6c79c, roughness: 0.4 }),
+      new THREE.CylinderGeometry(0.005, 0.01, 1.1, 12),
+      new THREE.MeshStandardMaterial({ color: 0xedd6b4, roughness: 0.3 }),
     );
     cueShaft.rotation.z = Math.PI / 2;
-    cueShaft.position.x = -0.74;
+    cueShaft.position.x = -0.62;
+
+    const cueGrip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.0125, 0.38, 12),
+      new THREE.MeshStandardMaterial({ color: 0x1a1b22, roughness: 0.7 }),
+    );
+    cueGrip.rotation.z = Math.PI / 2;
+    cueGrip.position.x = -1.22;
+
     const cueButt = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.011, 0.014, 0.45, 10),
-      new THREE.MeshStandardMaterial({ color: 0x2b180c, roughness: 0.5 }),
+      new THREE.CylinderGeometry(0.0125, 0.014, 0.22, 12),
+      new THREE.MeshStandardMaterial({ color: 0x4a2c16, roughness: 0.4 }),
     );
     cueButt.rotation.z = Math.PI / 2;
-    cueButt.position.x = -1.18;
-    this.poolCueGroup.add(cueShaft, cueButt);
+    cueButt.position.x = -1.52;
+
+    const cueTip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0048, 0.005, 0.02, 12),
+      new THREE.MeshStandardMaterial({ color: 0x2979ff, roughness: 0.9 }),
+    );
+    cueTip.rotation.z = Math.PI / 2;
+    cueTip.position.x = -0.06;
+
+    this.poolCueGroup.add(cueShaft, cueGrip, cueButt, cueTip);
     g.add(this.poolCueGroup);
 
     // Aiming Trajectory Guidelines & Ghost Ball
@@ -831,11 +1006,58 @@ export class ClubWorld {
       targetMat,
     );
     this.poolGhostBall = new THREE.Mesh(
-      new THREE.RingGeometry(POOL_TABLE.ballRadius * 0.8, POOL_TABLE.ballRadius * 1.05, 20),
+      new THREE.RingGeometry(POOL_TABLE.ballRadius * 0.85, POOL_TABLE.ballRadius * 1.05, 28),
       new THREE.MeshBasicMaterial({ color: 0x54e0ee, side: THREE.DoubleSide }),
     );
     this.poolGhostBall.rotation.x = -Math.PI / 2;
     g.add(this.poolGuideLine, this.poolTargetLine, this.poolGhostBall);
+  }
+
+  // Raycast station detection for click-to-play seamless navigation
+  pickStationAt(ndc: { x: number; y: number }): StationId | null {
+    _ndc.set(ndc.x, ndc.y);
+    _raycaster.setFromCamera(_ndc, this.camera);
+    const stationTargets: Array<{ id: StationId; obj: THREE.Object3D }> = [
+      { id: 'pool', obj: this.poolGroup },
+      { id: 'ludo', obj: this.ludoGroup },
+      { id: 'darts', obj: this.dartsGroup },
+      { id: 'dice', obj: this.diceTableGroup },
+    ];
+    for (const st of stationTargets) {
+      const hits = _raycaster.intersectObject(st.obj, true);
+      if (hits.length > 0) return st.id;
+    }
+    return null;
+  }
+
+  // Raycast floor position for click-to-move
+  pickFloorPoint(ndc: { x: number; y: number }): { x: number; z: number } | null {
+    _ndc.set(ndc.x, ndc.y);
+    _raycaster.setFromCamera(_ndc, this.camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    if (_raycaster.ray.intersectPlane(plane, hit)) {
+      const cx = Math.max(-4.5, Math.min(4.1, hit.x));
+      const cz = Math.max(-3.2, Math.min(3.5, hit.z));
+      return { x: cx, z: cz };
+    }
+    return null;
+  }
+
+  setMoveTarget(x: number, z: number): void {
+    this.playerTarget = { x, z };
+    if (this.moveTargetRing) {
+      this.moveTargetRing.position.set(x, 0.014, z);
+      this.moveTargetRing.scale.setScalar(1);
+      (this.moveTargetRing.material as THREE.MeshBasicMaterial).opacity = 0.9;
+    }
+  }
+
+  clearMoveTarget(): void {
+    this.playerTarget = null;
+    if (this.moveTargetRing) {
+      (this.moveTargetRing.material as THREE.MeshBasicMaterial).opacity = 0;
+    }
   }
 
   syncPoolState(
@@ -1729,55 +1951,34 @@ export class ClubWorld {
       let shot: { pos: THREE.Vector3; look: THREE.Vector3; fov: number };
       this.camK = 3.6;
 
-      if (mode === 'rollcam') {
-        shot = this._frameLudo(
-          new THREE.Vector3(O.x + L.trayX * 0.5, O.y, O.z + 0.02),
-          1.25,
-          0.86,
-          1.0,
-          fov,
-        );
+      if (mode === 'top') {
+        const center = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
+        this.tgtLook.copy(center);
+        this.tgtPos.set(center.x, center.y + 1.85, center.z + 0.01);
+        this.tgtFov = 42;
       } else if (mode === 'dice') {
-        shot = this._frameLudo(
-          new THREE.Vector3(O.x + L.trayX, O.y, O.z + 0.02),
-          0.52,
-          0.52,
-          1.12,
-          fov,
-        );
-      } else if (mode === 'top') {
-        shot = this._frameLudo(
-          new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y, O.z + 0.02),
-          1.42,
-          0.88,
-          Math.PI / 2 - 0.02,
-          fov,
-        );
+        const trayCenter = new THREE.Vector3(O.x + L.trayX, O.y + 0.05, O.z);
+        this.tgtLook.copy(trayCenter);
+        this.tgtPos.set(trayCenter.x, trayCenter.y + 0.95, trayCenter.z + 0.75);
+        this.tgtFov = 38;
       } else if (mode === 'orbit') {
         const o = this.ludoOrbit;
-        const look = new THREE.Vector3(O.x + 0.1, O.y, O.z);
-        shot = {
-          look,
-          fov: 44,
-          pos: new THREE.Vector3(
-            look.x + Math.sin(o.yaw) * Math.cos(o.pitch) * o.dist,
-            look.y + Math.sin(o.pitch) * o.dist,
-            look.z + Math.cos(o.yaw) * Math.cos(o.pitch) * o.dist,
-          ),
-        };
+        const look = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
+        this.tgtLook.copy(look);
+        this.tgtPos.set(
+          look.x + Math.sin(o.yaw) * Math.cos(o.pitch) * o.dist,
+          look.y + Math.sin(o.pitch) * o.dist,
+          look.z + Math.cos(o.yaw) * Math.cos(o.pitch) * o.dist,
+        );
+        this.tgtFov = 42;
         this.camK = 8;
       } else {
-        shot = this._frameLudo(
-          new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y, O.z),
-          1.52,
-          0.9,
-          1.02,
-          fov,
-        );
+        // Default board view centered on table
+        const boardCenter = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
+        this.tgtLook.copy(boardCenter);
+        this.tgtPos.set(boardCenter.x + 0.25, boardCenter.y + 1.6, boardCenter.z + 1.35);
+        this.tgtFov = 38;
       }
-      this.tgtPos.copy(shot.pos);
-      this.tgtLook.copy(shot.look);
-      this.tgtFov = shot.fov;
       return;
     }
 
@@ -2027,7 +2228,7 @@ export class ClubWorld {
   }
 
   render(): void {
-    this.pixelPost.render(this.scene, this.camera, this.isHeadless);
+    this.renderer.render(this.scene, this.camera);
   }
 
   dispose(): void {
