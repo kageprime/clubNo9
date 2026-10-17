@@ -202,8 +202,15 @@ export class ClubWorld {
 
   // Living bar props & Immersion groups
   loungeDecorGroup = new THREE.Group();
+  loungeFloorMesh!: THREE.Mesh;
+  focusStagePedestal!: THREE.Mesh;
+  keySpotLight!: THREE.SpotLight;
+  neonLight!: THREE.PointLight;
+  arcadeLight!: THREE.PointLight;
+  ludoLight!: THREE.PointLight;
   poolRugMesh!: THREE.Mesh;
   ludoRugMesh!: THREE.Mesh;
+  dartsWallBackdrop!: THREE.Mesh;
   bartenderGrp = new THREE.Group();
   arcadeCanvases: Array<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   arcadeTick = 0;
@@ -212,6 +219,7 @@ export class ClubWorld {
   emberData: Array<{ x: number; y: number; z: number; vy: number; phase: number }> = [];
   npcs: NpcPatron[] = [];
   bartenderArm!: THREE.Object3D;
+  transitionSwoop = 0;
 
   flash = 0;
   flashColor = new THREE.Color(1, 0.2, 0.1);
@@ -292,7 +300,7 @@ export class ClubWorld {
     const hemi = new THREE.HemisphereLight(0xffdcb8, 0x281c32, 0.85);
     this.scene.add(hemi);
 
-    // Overhead central billiard table key light (single shadow caster per performance budget)
+    // Overhead central key light (dynamically follows active table during Full-Screen Immersion)
     const spot = new THREE.SpotLight(0xfff0d0, 46, 17, 0.85, 0.65, 1.3);
     spot.position.set(0, 4.6, 0.3);
     spot.target.position.set(0, 0, 0.3);
@@ -303,22 +311,23 @@ export class ClubWorld {
       spot.shadow.camera.near = 1.2;
       spot.shadow.camera.far = 9.0;
     }
+    this.keySpotLight = spot;
     this.scene.add(spot, spot.target);
 
     // Neon sign magenta/cyan glow light
-    const neonLight = new THREE.PointLight(0xff5ec4, 9, 8.0, 1.4);
-    neonLight.position.set(-0.5, 3.3, -3.2);
-    this.scene.add(neonLight);
+    this.neonLight = new THREE.PointLight(0xff5ec4, 9, 8.0, 1.4);
+    this.neonLight.position.set(-0.5, 3.3, -3.2);
+    this.scene.add(this.neonLight);
 
     // Arcade row cyan/purple fill light
-    const arcadeLight = new THREE.PointLight(0x54e0ee, 8.5, 7.0, 1.4);
-    arcadeLight.position.set(-4.2, 2.2, 0.0);
-    this.scene.add(arcadeLight);
+    this.arcadeLight = new THREE.PointLight(0x54e0ee, 8.5, 7.0, 1.4);
+    this.arcadeLight.position.set(-4.2, 2.2, 0.0);
+    this.scene.add(this.arcadeLight);
 
     // Ludo & Dice table warm lamp light
-    const ludoLight = new THREE.PointLight(0xffcf78, 10, 6.5, 1.4);
-    ludoLight.position.set(-2.6, 2.8, 2.4);
-    this.scene.add(ludoLight);
+    this.ludoLight = new THREE.PointLight(0xffcf78, 10, 6.5, 1.4);
+    this.ludoLight.position.set(-2.6, 2.8, 2.4);
+    this.scene.add(this.ludoLight);
 
     // Fireplace warm flickering light
     this.fireLight = new THREE.PointLight(0xff7722, 16, 8.0, 1.4);
@@ -335,7 +344,23 @@ export class ClubWorld {
     const floor = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.2, 8.8), floorMat);
     floor.position.set(0, -0.1, 0);
     floor.receiveShadow = true;
+    this.loungeFloorMesh = floor;
     this.scene.add(floor);
+
+    // Focused Studio Velvet Pedestal (visible only when immersed in a specific game session)
+    this.focusStagePedestal = new THREE.Mesh(
+      new THREE.CircleGeometry(2.35, 48),
+      new THREE.MeshStandardMaterial({
+        color: 0x090d18,
+        roughness: 0.94,
+        metalness: 0.04,
+      }),
+    );
+    this.focusStagePedestal.rotation.x = -Math.PI / 2;
+    this.focusStagePedestal.position.set(0, 0.001, 0);
+    this.focusStagePedestal.receiveShadow = true;
+    this.focusStagePedestal.visible = false;
+    this.scene.add(this.focusStagePedestal);
 
     // Click-to-move pulsing destination ring
     this.moveTargetRing = new THREE.Mesh(
@@ -1735,6 +1760,7 @@ export class ClubWorld {
       }),
     );
     wallBackdrop.position.set(0, -0.1, -0.08);
+    this.dartsWallBackdrop = wallBackdrop;
     g.add(wallBackdrop);
 
     // Cabinet back + open scoreboard wings (matching reference image!)
@@ -1757,7 +1783,7 @@ export class ClubWorld {
 
     // First-person pixel hand + dart rig (visible in 'darts' station mode)
     this.fpsDartHand = this._makeDartMesh(0xff5a4a);
-    this.fpsDartHand.scale.setScalar(1.35);
+    this.fpsDartHand.scale.setScalar(0.72);
     g.add(this.fpsDartHand);
 
     this.npcFlyDart = this._makeDartMesh(0x54e0ee);
@@ -1767,23 +1793,33 @@ export class ClubWorld {
   private _makeDartMesh(flightColor = 0xff5a4a): THREE.Group {
     const d = new THREE.Group();
     const tip = new THREE.Mesh(
-      new THREE.ConeGeometry(0.005, 0.05, 6),
-      new THREE.MeshStandardMaterial({ color: 0xdadce0, metalness: 0.8, roughness: 0.2 }),
+      new THREE.ConeGeometry(0.004, 0.045, 8),
+      new THREE.MeshStandardMaterial({ color: 0xdadce0, metalness: 0.85, roughness: 0.2 }),
     );
     tip.rotation.x = -Math.PI / 2;
-    tip.position.z = -0.025;
+    tip.position.z = -0.022;
     const barrel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.008, 0.006, 0.07, 8),
-      new THREE.MeshStandardMaterial({ color: 0xd4a838, metalness: 0.7, roughness: 0.3 }),
+      new THREE.CylinderGeometry(0.0065, 0.005, 0.065, 10),
+      new THREE.MeshStandardMaterial({ color: 0xd4a838, metalness: 0.75, roughness: 0.28 }),
     );
     barrel.rotation.x = Math.PI / 2;
-    barrel.position.z = 0.035;
-    const flight = new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.045, 0.05),
-      new THREE.MeshBasicMaterial({ color: flightColor }),
+    barrel.position.z = 0.032;
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0035, 0.004, 0.035, 8),
+      new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.5 }),
     );
-    flight.position.z = 0.085;
-    d.add(tip, barrel, flight);
+    shaft.rotation.x = Math.PI / 2;
+    shaft.position.z = 0.072;
+    const finMat = new THREE.MeshStandardMaterial({
+      color: flightColor,
+      roughness: 0.45,
+      side: THREE.DoubleSide,
+    });
+    const finH = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.002, 0.038), finMat);
+    finH.position.z = 0.095;
+    const finV = new THREE.Mesh(new THREE.BoxGeometry(0.002, 0.034, 0.038), finMat);
+    finV.position.z = 0.095;
+    d.add(tip, barrel, shaft, finH, finV);
     return d;
   }
 
@@ -1812,17 +1848,18 @@ export class ClubWorld {
 
     this.fpsDartHand.visible = activeInDarts;
     if (activeInDarts) {
-      const swayX = Math.sin(this.time * 2.7) * 0.014;
-      const swayY = Math.cos(this.time * 3.4) * 0.014;
+      const swayX = Math.sin(this.time * 2.7) * 0.008;
+      const swayY = Math.cos(this.time * 3.4) * 0.008;
       this.fpsDartHand.position.set(
-        aim[0] + swayX + 0.06,
-        aim[1] + swayY - 0.08,
-        0.58,
+        aim[0] * 0.55 + swayX + 0.14,
+        aim[1] * 0.55 + swayY - 0.15,
+        0.44,
       );
-      this.fpsDartHand.lookAt(
-        DART_ORIGIN.x + aim[0],
-        DART_ORIGIN.y + aim[1],
-        DART_ORIGIN.z,
+      // Point tip (-Z) toward aimed target on the dartboard
+      this.fpsDartHand.rotation.set(
+        0.26 + aim[1] * 0.45,
+        0.28 - aim[0] * 0.45,
+        Math.sin(this.time * 2.1) * 0.04,
       );
     }
   }
@@ -1996,18 +2033,64 @@ export class ClubWorld {
     closeUpEnabled: boolean,
     isImmersedPlay = false,
   ): void {
-    const immersedGame =
-      isImmersedPlay &&
-      (station === 'pool' || station === 'ludo' || station === 'darts' || station === 'dice');
+    const isFocusedStation =
+      station === 'pool' || station === 'ludo' || station === 'darts' || station === 'dice';
+    const immersedGame = isFocusedStation && (isImmersedPlay || appMode === 'station');
 
-    // Full Immersion Isolation: When sitting down to play a game, hide all other stations & club distractions
+    // Full Immersion Isolation: Hide the entire lounge environment (walls, oak floor, rugs, other tables, NPCs)
     this.loungeDecorGroup.visible = !immersedGame;
+    if (this.loungeFloorMesh) this.loungeFloorMesh.visible = !immersedGame;
+    if (this.moveTargetRing) this.moveTargetRing.visible = !immersedGame;
+    if (this.poolRugMesh) this.poolRugMesh.visible = !immersedGame;
+    if (this.ludoRugMesh) this.ludoRugMesh.visible = !immersedGame;
+    if (this.dartsWallBackdrop) this.dartsWallBackdrop.visible = !immersedGame;
+
     this.poolGroup.visible = !immersedGame || station === 'pool';
-    if (this.poolRugMesh) this.poolRugMesh.visible = !immersedGame || station === 'pool';
     this.ludoGroup.visible = !immersedGame || station === 'ludo';
-    if (this.ludoRugMesh) this.ludoRugMesh.visible = !immersedGame || station === 'ludo';
     this.dartsGroup.visible = !immersedGame || station === 'darts';
     this.diceTableGroup.visible = !immersedGame || station === 'dice';
+
+    // Position the focused velvet studio stage & overhead spotlight directly on the active game
+    if (this.focusStagePedestal) {
+      this.focusStagePedestal.visible = immersedGame && station !== 'darts';
+      if (station === 'ludo') {
+        this.focusStagePedestal.position.set(LUDO_ORIGIN.x + 0.06, 0.001, LUDO_ORIGIN.z);
+        this.focusStagePedestal.scale.setScalar(0.85);
+      } else if (station === 'pool') {
+        this.focusStagePedestal.position.set(POOL_ORIGIN.x, 0.001, POOL_ORIGIN.z);
+        this.focusStagePedestal.scale.setScalar(1.05);
+      } else if (station === 'dice') {
+        this.focusStagePedestal.position.set(DICE_ORIGIN.x, 0.001, DICE_ORIGIN.z);
+        this.focusStagePedestal.scale.setScalar(0.55);
+      }
+    }
+
+    if (this.keySpotLight) {
+      if (immersedGame) {
+        const origin =
+          station === 'ludo'
+            ? LUDO_ORIGIN
+            : station === 'pool'
+              ? POOL_ORIGIN
+              : station === 'darts'
+                ? DART_ORIGIN
+                : DICE_ORIGIN;
+        this.keySpotLight.position.set(
+          origin.x,
+          station === 'darts' ? origin.y + 1.4 : 4.2,
+          station === 'darts' ? origin.z + 1.8 : origin.z + 0.25,
+        );
+        this.keySpotLight.target.position.set(origin.x, origin.y, origin.z);
+        this.keySpotLight.intensity = 58;
+      } else {
+        this.keySpotLight.position.set(0, 4.6, 0.3);
+        this.keySpotLight.target.position.set(0, 0, 0.3);
+        this.keySpotLight.intensity = 46;
+      }
+    }
+    if (this.neonLight) this.neonLight.visible = !immersedGame;
+    if (this.arcadeLight) this.arcadeLight.visible = !immersedGame;
+    if (this.fireLight) this.fireLight.visible = !immersedGame;
 
     this.player.grp.visible =
       !immersedGame &&
@@ -2016,18 +2099,11 @@ export class ClubWorld {
       this.loungeCamMode !== 'fps';
 
     this.npcs.forEach((npc) => {
-      if (immersedGame) {
-        npc.grp.visible = false;
-      } else if (station === 'ludo' && npc.role === 'ludo') {
-        npc.grp.visible = false;
-      } else if (station === 'darts' && npc.role === 'darts') {
-        npc.grp.visible = false;
-      } else if (station === 'pool' && poolCue.lowSight && npc.role === 'pool') {
-        npc.grp.visible = false;
-      } else {
-        npc.grp.visible = true;
-      }
+      npc.grp.visible = !immersedGame;
     });
+
+    const swoop = this.transitionSwoop;
+    const aspectScale = Math.max(1, 1.6 / Math.max(0.55, this.aspect));
 
     if (appMode === 'title') {
       const a = Math.sin(this.time * 0.22) * 0.35;
@@ -2047,18 +2123,18 @@ export class ClubWorld {
           : this.ludoPhase === 'roll'
             ? 'rollcam'
             : 'board';
-      this.camK = 3.6;
+      this.camK = 5.2;
 
       if (mode === 'top') {
         const center = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
         this.tgtLook.copy(center);
-        this.tgtPos.set(center.x, center.y + 1.95, center.z + 0.01);
-        this.tgtFov = 42;
+        this.tgtPos.set(center.x, center.y + 1.85 * aspectScale + swoop * 0.5, center.z + 0.01);
+        this.tgtFov = 40;
       } else if (mode === 'dice') {
         const trayCenter = new THREE.Vector3(O.x + L.trayX, O.y + 0.06, O.z);
         this.tgtLook.copy(trayCenter);
-        this.tgtPos.set(trayCenter.x, trayCenter.y + 0.92, trayCenter.z + 0.76);
-        this.tgtFov = 38;
+        this.tgtPos.set(trayCenter.x, trayCenter.y + 0.85 * aspectScale, trayCenter.z + 0.72 * aspectScale);
+        this.tgtFov = 36;
       } else if (mode === 'orbit') {
         const o = this.ludoOrbit;
         const look = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
@@ -2068,14 +2144,18 @@ export class ClubWorld {
           look.y + Math.sin(o.pitch) * o.dist,
           look.z + Math.cos(o.yaw) * Math.cos(o.pitch) * o.dist,
         );
-        this.tgtFov = 42;
+        this.tgtFov = 40;
         this.camK = 8;
       } else {
-        // Default board + dice tray framing centered cleanly across both non-overlapping zones
-        const boardCenter = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2 - 0.03, O.y + 0.04, O.z);
+        // Full-Screen Focused Ludo Table Framing: centers both 15x15 Board (-0.75) and Shaker Cup (+0.71)
+        const boardCenter = new THREE.Vector3(O.x - 0.02, O.y + 0.02, O.z + 0.02);
         this.tgtLook.copy(boardCenter);
-        this.tgtPos.set(boardCenter.x + 0.04, boardCenter.y + 1.48, boardCenter.z + 1.18);
-        this.tgtFov = 38;
+        this.tgtPos.set(
+          boardCenter.x,
+          boardCenter.y + 1.32 * aspectScale + swoop * 0.65,
+          boardCenter.z + 0.94 * aspectScale + swoop * 0.55,
+        );
+        this.tgtFov = 38 + swoop * 8;
       }
       return;
     }
@@ -2108,29 +2188,41 @@ export class ClubWorld {
         this.camK = 6.0;
         return;
       }
-      // Overhead angled billiard framing
-      this.tgtLook.set(O.x, O.y, O.z);
-      this.tgtPos.set(O.x, O.y + 1.92, O.z + 1.12);
-      this.tgtFov = 44;
-      this.camK = 4.5;
+      // Full-Screen Focused 8-Ball Billiard Table Framing (fits all 6 pockets & walnut rails)
+      this.tgtLook.set(O.x, O.y + 0.02, O.z + 0.03);
+      this.tgtPos.set(
+        O.x,
+        O.y + 1.72 * aspectScale + swoop * 0.7,
+        O.z + 0.98 * aspectScale + swoop * 0.55,
+      );
+      this.tgtFov = 42 + swoop * 8;
+      this.camK = 5.2;
       return;
     }
 
     if (station === 'darts') {
       const D = DART_ORIGIN;
       this.tgtLook.set(D.x, D.y, D.z);
-      this.tgtPos.set(D.x, D.y - 0.04, D.z + 1.12);
-      this.tgtFov = 38;
-      this.camK = 5.0;
+      this.tgtPos.set(
+        D.x,
+        D.y - 0.02 + swoop * 0.22,
+        D.z + 0.96 * aspectScale + swoop * 0.55,
+      );
+      this.tgtFov = 36 + swoop * 8;
+      this.camK = 5.5;
       return;
     }
 
     if (station === 'dice') {
       const C = DICE_ORIGIN;
-      this.tgtLook.set(C.x, C.y + 0.05, C.z);
-      this.tgtPos.set(C.x, C.y + 0.72, C.z + 0.68);
-      this.tgtFov = 40;
-      this.camK = 4.8;
+      this.tgtLook.set(C.x, C.y + 0.05, C.z + 0.02);
+      this.tgtPos.set(
+        C.x,
+        C.y + 0.56 * aspectScale + swoop * 0.45,
+        C.z + 0.52 * aspectScale + swoop * 0.45,
+      );
+      this.tgtFov = 36 + swoop * 8;
+      this.camK = 5.2;
       return;
     }
 

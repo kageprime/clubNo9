@@ -9,6 +9,50 @@ import { DieTray, topFace, quatFaceUp } from './ludoDieTray.ts';
 import { PoolSim } from './poolSim.ts';
 import { scoreDartAt, DartsGame } from './dartsSim.ts';
 import { DiceCupSim } from './diceCupSim.ts';
+import {
+  GAME_TRANSITION_META,
+  isGameStation,
+  beginViewTransition,
+  stepViewTransition,
+} from './viewTransition.ts';
+
+test('View transition state machine hides lounge environment and overlays when entering Ludo, Pool, Darts, or Dice', () => {
+  for (const gameId of ['ludo', 'pool', 'darts', 'dice'] as const) {
+    assert.equal(isGameStation(gameId), true);
+    assert.ok(GAME_TRANSITION_META[gameId].titleEn.length > 0);
+
+    let st = beginViewTransition(gameId, 'enter', 0.6);
+    assert.equal(st.active, true);
+    assert.equal(st.hideLoungeEnv, true);
+    assert.equal(st.hideLoungeOverlays, true);
+    assert.ok(st.cameraSwoop > 0.9);
+
+    // Step to peak shutter veil (~0.25s)
+    st = stepViewTransition(st, 0.25);
+    assert.equal(st.active, true);
+    assert.ok(st.shutterProgress > 0.85);
+    assert.equal(st.hideLoungeEnv, true);
+
+    // Step to completion (0.6s total)
+    st = stepViewTransition(st, 0.4);
+    assert.equal(st.active, false);
+    assert.equal(st.progress, 1);
+    assert.equal(st.shutterProgress, 0);
+    assert.equal(st.cameraSwoop, 0);
+    // Lounge environment and lounge overlays stay hidden while immersed in the game
+    assert.equal(st.hideLoungeEnv, true);
+    assert.equal(st.hideLoungeOverlays, true);
+  }
+
+  // Exiting back to lounge restores lounge environment and overlays
+  let exitSt = beginViewTransition('none', 'exit', 0.5);
+  assert.equal(exitSt.active, true);
+  exitSt = stepViewTransition(exitSt, 0.55);
+  assert.equal(exitSt.active, false);
+  assert.equal(exitSt.hideLoungeEnv, false);
+  assert.equal(exitSt.hideLoungeOverlays, false);
+});
+
 
 test('deterministic PRNG produces reproducible sequence', () => {
   const r1 = mulberry32(42);

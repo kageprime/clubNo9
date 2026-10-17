@@ -46,6 +46,14 @@ import {
 } from './scene/clubWorld.ts';
 import { ClubAudio } from './scene/audio.ts';
 import { P2PLobbyManager } from './net/p2pLobby.ts';
+import {
+  GAME_TRANSITION_META,
+  isGameStation,
+  createIdleTransition,
+  beginViewTransition,
+  stepViewTransition,
+  type ViewTransitionState,
+} from './game/viewTransition.ts';
 
 const LUDO_PRESETS: Record<string, SeatType[]> = {
   cpu: ['human', 'cpu', 'cpu', 'cpu'],
@@ -68,9 +76,15 @@ export default function App() {
     autoStart ? (initialStation !== 'none' ? 'station' : 'lounge') : 'title',
   );
   const [station, setStation] = useState<StationId>(autoStart ? initialStation : 'none');
-  const [stationViewMode, setStationViewMode] = useState<'view' | 'play'>('view');
+  const [stationViewMode, setStationViewMode] = useState<'view' | 'play'>(
+    autoStart && isGameStation(initialStation) ? 'play' : 'view',
+  );
   const [pausedGames, setPausedGames] = useState<Partial<Record<StationId, boolean>>>({});
   const [showNavMenu, setShowNavMenu] = useState(false);
+  const [hudCollapsed, setHudCollapsed] = useState(false);
+  const [transitionUi, setTransitionUi] = useState<ViewTransitionState>(() =>
+    createIdleTransition(autoStart ? initialStation : 'none'),
+  );
   const [loungeCam, setLoungeCam] = useState<'isometric' | 'fps'>('isometric');
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
@@ -188,6 +202,10 @@ export default function App() {
   const dieTagRef = useRef<HTMLDivElement | null>(null);
   const pawnTagsContainerRef = useRef<HTMLDivElement | null>(null);
   const screenFlashRef = useRef<HTMLDivElement | null>(null);
+  const transitionOverlayRef = useRef<HTMLDivElement | null>(null);
+  const transitionRef = useRef<ViewTransitionState>(
+    createIdleTransition(autoStart ? initialStation : 'none'),
+  );
 
   const worldRef = useRef<ClubWorld | null>(null);
   const audioRef = useRef<ClubAudio>(new ClubAudio());
@@ -264,7 +282,9 @@ export default function App() {
     document.body.dataset.state = stateAttr;
     document.body.dataset.station = station;
     document.body.dataset.viewmode = stationViewMode;
-  }, [appMode, station, stationViewMode]);
+    document.body.dataset.immersed = String(isGameStation(station) && stationViewMode === 'play');
+    document.body.dataset.transitioning = String(transitionUi.active);
+  }, [appMode, station, stationViewMode, transitionUi.active]);
 
   const showFlash = useCallback((title: string, sub = '', color = '#ffb84a') => {
     setFlashBanner({ title, sub, color });
@@ -547,12 +567,19 @@ export default function App() {
   const enterPlayMode = useCallback(
     (target?: StationId) => {
       const st = target && target !== 'none' ? target : stationRef.current;
-      if (st === 'none' || st === 'arcade' || st === 'bartender' || st === 'jukebox') return;
+      if (!isGameStation(st)) return;
       audioRef.current.unlock();
       audioRef.current.play('turn');
       setShowNavMenu(false);
+      setHudCollapsed(false);
+      setNpcBubble((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+      setFlashBanner(null);
 
-      const wasPaused = Boolean(pausedGamesRef.current[st]);
+      // Start custom Spotlight Shutter & Iris Transition Effect
+      const nextTrans = beginViewTransition(st, 'enter', 0.68);
+      transitionRef.current = nextTrans;
+      setTransitionUi(nextTrans);
+
       userPlayedRef.current[st] = true;
       pausedGamesRef.current = { ...pausedGamesRef.current, [st]: false };
       setPausedGames({ ...pausedGamesRef.current });
@@ -567,28 +594,17 @@ export default function App() {
       if (st === 'ludo' && !ludoCtrlRef.current.runId) {
         startLudoMatch(ludoSeats, ludoDiff);
       }
-      worldRef.current?.snapCamera(
-        'station',
-        st,
-        poolSimRef.current?.cue || { yaw: 0, lowSight: false },
-        true,
-      );
-
-      showFlash(
-        wasPaused
-          ? langRef.current === 'zh'
-            ? '已恢复对局'
-            : 'Match Resumed'
-          : langRef.current === 'zh'
-            ? '沉浸模式 · 对局开始'
-            : 'Immersed Play Mode',
-        langRef.current === 'zh'
-          ? '专注当前球桌 · 按 ESC 可暂停并离开漫步'
-          : 'Focused on your table · Press ESC anytime to pause & walk around',
-        '#5fe08a',
-      );
+      if (worldRef.current) {
+        worldRef.current.transitionSwoop = 1.0;
+        worldRef.current.snapCamera(
+          'station',
+          st,
+          poolSimRef.current?.cue || { yaw: 0, lowSight: false },
+          true,
+        );
+      }
     },
-    [ludoDiff, ludoSeats, showFlash, startLudoMatch],
+    [ludoDiff, ludoSeats, startLudoMatch],
   );
 
   const leaveAndPauseStation = useCallback(() => {
@@ -596,14 +612,18 @@ export default function App() {
     const wasPlaying = viewModeRef.current === 'play';
     if (worldRef.current) {
       worldRef.current.ludoManualShake = { active: false, power: 0 };
+      worldRef.current.transitionSwoop = 0;
     }
     chargeRef.current.active = false;
     setShowNavMenu(false);
+    setHudCollapsed(false);
 
-    if (
-      wasPlaying &&
-      (currentSt === 'pool' || currentSt === 'ludo' || currentSt === 'darts' || currentSt === 'dice')
-    ) {
+    // Trigger custom exit transition back to Lounge
+    const exitTrans = beginViewTransition('none', 'exit', 0.48);
+    transitionRef.current = exitTrans;
+    setTransitionUi(exitTrans);
+
+    if (wasPlaying && isGameStation(currentSt)) {
       userPlayedRef.current[currentSt] = true;
       pausedGamesRef.current = { ...pausedGamesRef.current, [currentSt]: true };
       setPausedGames({ ...pausedGamesRef.current });
@@ -630,7 +650,7 @@ export default function App() {
   }, [showFlash]);
 
   const activateStation = useCallback(
-    (target: StationId, autoPlay = false) => {
+    (target: StationId, _autoPlay = true) => {
       audioRef.current.unlock();
       audioRef.current.play('tick');
       setShowNavMenu(false);
@@ -661,7 +681,8 @@ export default function App() {
         leaveAndPauseStation();
         return;
       }
-      if (autoPlay) {
+      // Entering any of the 4 games (Ludo, Pool, Darts, Dice) immediately runs the custom transition into full-screen focused state
+      if (isGameStation(target)) {
         enterPlayMode(target);
         return;
       }
@@ -671,19 +692,8 @@ export default function App() {
       setStation(target);
       setStationViewMode('view');
       setAppMode('station');
-      if (target === 'ludo' && !ludoCtrlRef.current.runId) {
-        startLudoMatch(ludoSeats, ludoDiff);
-      }
-      if (target !== 'arcade') {
-        worldRef.current?.snapCamera(
-          'station',
-          target,
-          poolSimRef.current?.cue || { yaw: 0, lowSight: false },
-          false,
-        );
-      }
     },
-    [enterPlayMode, leaveAndPauseStation, ludoDiff, ludoSeats, showFlash, startLudoMatch],
+    [enterPlayMode, leaveAndPauseStation, showFlash],
   );
 
   const handleStartFromTitle = useCallback(
@@ -1047,11 +1057,42 @@ export default function App() {
           if (chargeRef.current.t > 1.55) releaseCharge();
         }
 
-        // 6. Update Scene Camera & Render (with Full Immersion Isolation when playing a station)
+        // 6. Step Custom View Transition & Update Scene Camera (Full Immersion Isolation in games)
+        if (transitionRef.current.active) {
+          transitionRef.current = stepViewTransition(transitionRef.current, rawDt);
+          world.transitionSwoop = transitionRef.current.cameraSwoop;
+          const el = transitionOverlayRef.current;
+          if (el) {
+            const sp = transitionRef.current.shutterProgress;
+            el.style.opacity = sp > 0.01 ? '1' : '0';
+            const topBlade = el.querySelector('[data-blade="top"]') as HTMLElement | null;
+            const botBlade = el.querySelector('[data-blade="bottom"]') as HTMLElement | null;
+            const plaque = el.querySelector('[data-plaque="center"]') as HTMLElement | null;
+            if (topBlade) {
+              topBlade.style.transform = `translate3d(0, ${(sp - 1) * 100}%, 0)`;
+            }
+            if (botBlade) {
+              botBlade.style.transform = `translate3d(0, ${(1 - sp) * 100}%, 0)`;
+            }
+            if (plaque) {
+              const pOpacity = Math.min(1, Math.max(0, (sp - 0.15) * 1.55));
+              plaque.style.opacity = String(pOpacity);
+              plaque.style.transform = `scale(${0.92 + sp * 0.08})`;
+            }
+          }
+          if (!transitionRef.current.active) {
+            world.transitionSwoop = 0;
+            setTransitionUi({ ...transitionRef.current });
+          }
+        } else {
+          world.transitionSwoop = 0;
+        }
+
         const isImmersedPlay =
-          viewModeRef.current === 'play' &&
-          stationRef.current !== 'none' &&
-          stationRef.current !== 'arcade';
+          isGameStation(stationRef.current) ||
+          (viewModeRef.current === 'play' &&
+            stationRef.current !== 'none' &&
+            stationRef.current !== 'arcade');
         world.update(
           paused ? 0 : rawDt,
           modeRef.current,
@@ -1198,18 +1239,10 @@ export default function App() {
         return;
       }
 
-      // Station View Mode: Space/Enter sits down in Full Immersion Play mode; V/E exits to lounge
-      if (viewModeRef.current === 'view') {
-        if (code === 'Space' || code === 'Enter') {
-          e.preventDefault();
-          enterPlayMode(st);
-          return;
-        }
-        if (code === 'KeyV' || code === 'KeyE') {
-          e.preventDefault();
-          leaveAndPauseStation();
-          return;
-        }
+      if (code === 'KeyH') {
+        e.preventDefault();
+        setHudCollapsed((prev) => !prev);
+        return;
       }
 
       // Station-specific shortcuts in active play mode
@@ -1327,12 +1360,12 @@ export default function App() {
     if (station === 'none') {
       const clickedStation = world.pickStationAt(ndc);
       if (clickedStation) {
-        // Move near that station and open it in VIEW mode (no forced play)
+        // Clicking any game station in the lounge triggers the custom transition directly into Full-Screen Focused Play
         const hs = STATION_HOTSPOTS.find((h) => h.id === clickedStation);
         if (hs) {
           world.setMoveTarget(hs.x, hs.z);
         }
-        activateStation(clickedStation, false);
+        activateStation(clickedStation, true);
         return;
       }
       // Click-to-move on floor
@@ -1604,14 +1637,76 @@ export default function App() {
       )}
 
       {/* ==================================================================
-          2. NON-INVASIVE GAMEPLAY & LOUNGE HUD
+          1.5 CUSTOM GAME VIEW TRANSITION SHUTTER & FULL-SCREEN VIGNETTE
+         ================================================================== */}
+      {isGameStation(station) && (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 pointer-events-none z-10 immersed-studio-vignette"
+        />
+      )}
+
+      <div
+        ref={transitionOverlayRef}
+        data-testid="game-transition-overlay"
+        data-active={transitionUi.active ? 'true' : 'false'}
+        aria-hidden={!transitionUi.active}
+        style={{ opacity: transitionUi.active ? 1 : 0 }}
+        className="fixed inset-0 pointer-events-none z-50 overflow-hidden transition-opacity duration-150"
+      >
+        {/* Top Velvet & Brass Shutter Blade */}
+        <div
+          data-blade="top"
+          style={{ transform: 'translate3d(0, -100%, 0)' }}
+          className="absolute inset-x-0 top-0 h-[52%] transition-shutter-top"
+        />
+        {/* Bottom Velvet & Cyan Shutter Blade */}
+        <div
+          data-blade="bottom"
+          style={{ transform: 'translate3d(0, 100%, 0)' }}
+          className="absolute inset-x-0 bottom-0 h-[52%] transition-shutter-bottom"
+        />
+        {/* Center Game Focus Emblem Plaque */}
+        <div
+          data-plaque="center"
+          style={{ opacity: 0, transform: 'scale(0.92)' }}
+          className="absolute inset-0 flex items-center justify-center p-6"
+        >
+          {isGameStation(transitionUi.targetStation) ? (
+            <div className="club-panel px-8 py-6 max-w-md w-full text-center border-2 border-amber-400/70 shadow-[0_0_80px_rgba(255,184,74,0.35)]">
+              <div className="text-[11px] font-mono-tabular font-bold tracking-[0.25em] text-cyan-300 uppercase mb-2">
+                {GAME_TRANSITION_META[transitionUi.targetStation].tableNumber} · FULL-SCREEN FOCUS
+              </div>
+              <div className="font-display text-2xl sm:text-3xl font-extrabold text-amber-400 tracking-wide">
+                {lang === 'zh'
+                  ? GAME_TRANSITION_META[transitionUi.targetStation].titleZh
+                  : GAME_TRANSITION_META[transitionUi.targetStation].titleEn}
+              </div>
+              <div className="text-xs text-stone-300 mt-2 font-medium">
+                {lang === 'zh'
+                  ? GAME_TRANSITION_META[transitionUi.targetStation].subtitleZh
+                  : GAME_TRANSITION_META[transitionUi.targetStation].subtitleEn}
+              </div>
+            </div>
+          ) : (
+            <div className="club-panel px-7 py-4 text-center border border-white/20">
+              <div className="font-display text-xl font-extrabold text-amber-400 tracking-wider">
+                {lang === 'zh' ? '返回九号俱乐部大厅' : 'RETURNING TO CLUB LOUNGE'}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ==================================================================
+          2. FOCUSED GAME SESSION HUD vs. LOUNGE EXPLORATION HUD
          ================================================================== */}
       {appMode !== 'title' && (
         <div className="fixed inset-0 pointer-events-none z-30">
-          {/* Top-Left Navigation Pill & Paused Game Resume Chips */}
+          {/* Top-Left Navigation / Leave-and-Pause Control */}
           <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2 pointer-events-auto max-w-[68vw]">
-            {station !== 'none' && stationViewMode === 'play' ? (
-              /* Immersed Play Mode: Clean Leave & Pause Button */
+            {isGameStation(station) ? (
+              /* Full-Screen Focused Game Mode: Lounge overlays hidden, only clean Leave & Pause + Camera/HUD controls */
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -1621,17 +1716,9 @@ export default function App() {
                   <span>⏸ {lang === 'zh' ? '暂停并离开球桌' : 'Leave & Pause'}</span>
                   <kbd className="club-kbd text-[10px]">ESC</kbd>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setStationViewMode('view')}
-                  className="club-btn text-xs py-2 px-2.5"
-                  title="Inspect Table"
-                >
-                  👁️ {lang === 'zh' ? '环视' : 'Inspect'}
-                </button>
               </div>
             ) : (
-              /* Lounge / Inspection Mode: Compact Brand Pill + Expandable Map Popover */
+              /* Lounge Exploration Mode: Compact Brand Pill + Expandable Club Map Popover */
               <div className="relative flex items-center gap-1.5">
                 <div className="club-panel px-3 py-1.5 flex items-center gap-2">
                   <span className="font-display font-bold text-amber-400 tracking-wider text-xs sm:text-sm">
@@ -1667,7 +1754,7 @@ export default function App() {
                   </button>
                 )}
 
-                {/* Paused Game One-Click Resume Chips while Walking Around */}
+                {/* Paused Game One-Click Resume Chips while Walking Around Lounge */}
                 {station === 'none' &&
                   (['pool', 'ludo', 'darts', 'dice'] as StationId[])
                     .filter((id) => pausedGames[id])
@@ -1697,11 +1784,11 @@ export default function App() {
                       </button>
                     ))}
 
-                {/* Compact Floating Club Map Popover (Replaces Invasive Bottom Bar) */}
+                {/* Compact Floating Club Map Popover (Lounge Only) */}
                 {showNavMenu && (
                   <div className="absolute left-0 top-11 club-panel p-2 w-56 flex flex-col gap-1 z-50 shadow-2xl">
                     <div className="px-2.5 py-1 text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
-                      <span>{lang === 'zh' ? '选择机台或区域' : 'Jump to Zone'}</span>
+                      <span>{lang === 'zh' ? '进入全屏专注游戏' : 'Enter Focused Game'}</span>
                       <span>[TAB]</span>
                     </div>
                     <button
@@ -1715,10 +1802,8 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => activateStation('pool', Boolean(pausedGames.pool))}
-                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
-                        station === 'pool' ? 'club-btn-active' : ''
-                      }`}
+                      onClick={() => enterPlayMode('pool')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
                     >
                       <span>🎱 {t.stationPool}</span>
                       {pausedGames.pool && (
@@ -1727,10 +1812,8 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => activateStation('ludo', Boolean(pausedGames.ludo))}
-                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
-                        station === 'ludo' ? 'club-btn-active' : ''
-                      }`}
+                      onClick={() => enterPlayMode('ludo')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
                     >
                       <span>🎲 {t.stationLudo}</span>
                       {pausedGames.ludo && (
@@ -1739,10 +1822,8 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => activateStation('darts', Boolean(pausedGames.darts))}
-                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
-                        station === 'darts' ? 'club-btn-active' : ''
-                      }`}
+                      onClick={() => enterPlayMode('darts')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
                     >
                       <span>🎯 {t.stationDarts}</span>
                       {pausedGames.darts && (
@@ -1751,10 +1832,8 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => activateStation('dice', Boolean(pausedGames.dice))}
-                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
-                        station === 'dice' ? 'club-btn-active' : ''
-                      }`}
+                      onClick={() => enterPlayMode('dice')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between"
                     >
                       <span>🥤 {t.stationDice}</span>
                       {pausedGames.dice && (
@@ -1800,8 +1879,29 @@ export default function App() {
             )}
           </div>
 
-          {/* Top-Right Compact Utility Icons */}
+          {/* Top-Right Compact Utility Icons (Lounge Jukebox hidden during focused game sessions) */}
           <div className="absolute right-3 top-3 flex items-center gap-1.5 pointer-events-auto">
+            {isGameStation(station) && (
+              <button
+                type="button"
+                onClick={() => setHudCollapsed((v) => !v)}
+                className="club-btn text-xs py-1.5 px-2.5 flex items-center gap-1"
+                aria-label={hudCollapsed ? 'Show Controls' : 'Hide Controls'}
+                title="Toggle Bottom Controls [H]"
+              >
+                {hudCollapsed ? (
+                  <>
+                    <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="hidden sm:inline">{lang === 'zh' ? '显示控制' : 'Controls'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5 text-cyan-300" />
+                    <span className="hidden sm:inline">{lang === 'zh' ? '隐藏面板' : 'Zen HUD'}</span>
+                  </>
+                )}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
@@ -1810,16 +1910,18 @@ export default function App() {
             >
               {lang === 'zh' ? 'EN' : '中文'}
             </button>
-            <button
-              type="button"
-              onClick={() => activateStation('jukebox')}
-              className="club-btn text-xs py-1.5 px-2 flex items-center gap-1"
-              aria-label="Switch Jukebox Track"
-              title={t.tracks[jukeboxTrack]}
-            >
-              <Disc3 className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">CH.{jukeboxTrack + 1}</span>
-            </button>
+            {!isGameStation(station) && (
+              <button
+                type="button"
+                onClick={() => activateStation('jukebox')}
+                className="club-btn text-xs py-1.5 px-2 flex items-center gap-1"
+                aria-label="Switch Jukebox Track"
+                title={t.tracks[jukeboxTrack]}
+              >
+                <Disc3 className="w-3.5 h-3.5 text-amber-400" />
+                <span className="hidden sm:inline">CH.{jukeboxTrack + 1}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1954,34 +2056,32 @@ export default function App() {
                 <span>P2 ({poolUi.suits[1] || t.poolOpen})</span>
               </div>
               <span className="text-xs text-stone-300 hidden lg:inline">· {poolUi.message}</span>
-              {stationViewMode === 'play' && (
-                <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (poolSimRef.current) {
-                        poolSimRef.current.cue.lowSight = !poolSimRef.current.cue.lowSight;
-                        syncPoolReactState();
-                      }
-                    }}
-                    className={`club-btn text-[11px] py-1 px-2 ${poolUi.lowSight ? 'club-btn-gold' : ''}`}
-                  >
-                    {t.poolLowSight}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      poolSimRef.current?.rackBalls();
+              <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (poolSimRef.current) {
+                      poolSimRef.current.cue.lowSight = !poolSimRef.current.cue.lowSight;
                       syncPoolReactState();
-                    }}
-                    className="club-btn text-[11px] py-1 px-2 flex items-center gap-1"
-                    title={t.poolRerack}
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span className="hidden sm:inline">{t.poolRerack}</span>
-                  </button>
-                </div>
-              )}
+                    }
+                  }}
+                  className={`club-btn text-[11px] py-1 px-2 ${poolUi.lowSight ? 'club-btn-gold' : ''}`}
+                >
+                  {t.poolLowSight}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    poolSimRef.current?.rackBalls();
+                    syncPoolReactState();
+                  }}
+                  className="club-btn text-[11px] py-1 px-2 flex items-center gap-1"
+                  title={t.poolRerack}
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span className="hidden sm:inline">{t.poolRerack}</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -2028,7 +2128,7 @@ export default function App() {
           )}
 
           {/* Center Event Flash Toast */}
-          {flashBanner && (
+          {flashBanner && !transitionUi.active && (
             <div
               style={{ color: flashBanner.color }}
               className="absolute left-1/2 top-1/4 -translate-x-1/2 text-center drop-shadow-[0_4px_18px_rgba(0,0,0,0.85)] pointer-events-none"
@@ -2042,97 +2142,12 @@ export default function App() {
             </div>
           )}
 
-          {/* Station View / Inspection Card (Click table to VIEW, then choose to Sit Down & Play or Resume) */}
-          {station !== 'none' && station !== 'arcade' && stationViewMode === 'view' && (
-            <div className="absolute left-1/2 bottom-6 -translate-x-1/2 club-panel p-4 w-[min(92vw,440px)] flex flex-col gap-3 pointer-events-auto shadow-2xl z-30 border border-amber-400/35">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-3xl">
-                    {station === 'pool'
-                      ? '🎱'
-                      : station === 'ludo'
-                        ? '🎲'
-                        : station === 'darts'
-                          ? '🎯'
-                          : '🥤'}
-                  </span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-display font-bold text-base text-amber-300">
-                        {lang === 'zh'
-                          ? STATION_HOTSPOTS.find((h) => h.id === station)?.labelZh
-                          : STATION_HOTSPOTS.find((h) => h.id === station)?.labelEn}
-                      </h3>
-                      <span className="text-[11px] text-cyan-300 font-semibold">
-                        · {pausedGames[station] ? (lang === 'zh' ? '对局已暂停' : 'PAUSED') : (lang === 'zh' ? '观摩中' : 'VIEWING')}
-                      </span>
-                    </div>
-                    <p className="text-xs text-stone-300 mt-0.5">
-                      {station === 'pool'
-                        ? lang === 'zh'
-                          ? '中式八球 · 入座后进入全屏专注台球模式'
-                          : 'Chinese 8-Ball · Sit down for distraction-free table immersion'
-                        : station === 'ludo'
-                          ? lang === 'zh'
-                            ? '俱乐部飞行棋 · 3D皮革骰盅摇晃掷骰 · 独立骰盘'
-                            : '4-Player Ludo · Vigorous 3D Shaker Cup & Felt Dice Tray'
-                          : station === 'darts'
-                            ? lang === 'zh'
-                              ? '20分区标准飞镖 · 钨钢镖身与风向物理'
-                              : '20-Zone Regulation Sisal Dartboard'
-                            : lang === 'zh'
-                              ? '大话骰盅 · 5粒真实物理骰子摇晃对决'
-                              : "Liar's Dice · 5 Shaker Dice Showdown"}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={leaveAndPauseStation}
-                  className="text-stone-400 hover:text-white px-2 py-1 text-sm rounded cursor-pointer"
-                  title="Close View"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => enterPlayMode(station)}
-                  className="club-btn club-btn-gold flex-1 text-sm py-2.5 font-extrabold flex justify-center items-center gap-2 cursor-pointer shadow-lg"
-                >
-                  <span>
-                    {pausedGames[station]
-                      ? lang === 'zh'
-                        ? '▶ 继续对局 (沉浸模式)'
-                        : '▶ Resume Game'
-                      : lang === 'zh'
-                        ? '🎮 入座开始游戏'
-                        : '🎮 Sit Down & Play'}
-                  </span>
-                  <kbd className="club-kbd text-[10px]">SPACE</kbd>
-                </button>
-                <button
-                  type="button"
-                  onClick={leaveAndPauseStation}
-                  className="club-btn text-xs py-2.5 px-3.5 flex justify-center items-center gap-1 cursor-pointer"
-                >
-                  <span>🚶 {lang === 'zh' ? '漫步' : 'Walk Around'}</span>
-                  <kbd className="club-kbd text-[10px]">ESC</kbd>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Lounge Proximity Interaction Pill */}
-          {station === 'none' && nearbyHotspot !== 'none' && (
+          {/* Lounge Proximity Interaction Pill (Hidden when in any game) */}
+          {station === 'none' && nearbyHotspot !== 'none' && !transitionUi.hideLoungeOverlays && (
             <div className="absolute left-1/2 bottom-12 -translate-x-1/2 pointer-events-auto z-20">
               <button
                 type="button"
-                onClick={() =>
-                  activateStation(nearbyHotspot, Boolean(pausedGames[nearbyHotspot]))
-                }
+                onClick={() => activateStation(nearbyHotspot, true)}
                 className="club-btn club-btn-gold px-5 py-2.5 text-xs sm:text-sm flex items-center gap-2 shadow-xl whitespace-nowrap cursor-pointer"
               >
                 <span>
@@ -2141,28 +2156,28 @@ export default function App() {
                       ? `▶ 继续 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
                       : `▶ Resume ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`
                     : lang === 'zh'
-                      ? `观摩 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
-                      : `Inspect ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`}
+                      ? `🎮 进入 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
+                      : `🎮 Play ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`}
                 </span>
                 <kbd className="club-kbd text-[10px]">E</kbd>
               </button>
             </div>
           )}
 
-          {/* Subtle Non-Invasive Lounge Footer Hint */}
-          {station === 'none' && (
+          {/* Subtle Non-Invasive Lounge Footer Hint (Lounge Only) */}
+          {station === 'none' && !transitionUi.hideLoungeOverlays && (
             <div className="absolute left-1/2 bottom-3 -translate-x-1/2 text-[11px] text-stone-300/80 bg-black/55 px-3.5 py-1 rounded-full border border-white/10 pointer-events-none whitespace-nowrap">
               {lang === 'zh'
-                ? '点击地面移动 · 点击任意球桌观摩 · WASD 行走 · V 切换视角'
-                : 'Click floor to walk · Click any table to inspect · WASD Move · V Camera'}
+                ? '点击地面移动 · 点击任意球桌进入全屏沉浸对局 · WASD 行走 · V 切换视角'
+                : 'Click floor to walk · Click any table for full-screen game focus · WASD Move · V Camera'}
             </div>
           )}
 
-          {/* Compact Action Pill at Bottom Center (Active Immersed Play Mode Only) */}
+          {/* Compact Action Pill at Bottom Center (Active Immersed Play Mode Only, Collapsible via [H]) */}
           {(station === 'ludo' || station === 'pool' || station === 'darts') &&
-            stationViewMode === 'play' && (
-              <div className="absolute left-1/2 bottom-5 -translate-x-1/2 club-panel px-4 py-2.5 flex items-center gap-3 pointer-events-auto shadow-2xl">
-                <div className="w-44 sm:w-56">
+            !hudCollapsed && (
+              <div className="absolute left-1/2 bottom-4 -translate-x-1/2 club-panel px-4 py-2 flex items-center gap-3 pointer-events-auto shadow-2xl">
+                <div className="w-40 sm:w-52">
                   <div className="flex justify-between text-[10px] font-bold text-amber-400 mb-1">
                     <span>
                       {station === 'ludo'
@@ -2195,7 +2210,7 @@ export default function App() {
                     }}
                     onPointerUp={releaseCharge}
                     onPointerCancel={releaseCharge}
-                    className="club-btn club-btn-gold px-4 sm:px-5 py-2.5 text-xs sm:text-sm font-extrabold"
+                    className="club-btn club-btn-gold px-4 sm:px-5 py-2 text-xs sm:text-sm font-extrabold"
                   >
                     {station === 'ludo'
                       ? lang === 'zh'
@@ -2221,9 +2236,9 @@ export default function App() {
               </div>
             )}
 
-          {/* Dice Cup Action Strip (Active Immersed Play Mode Only) */}
-          {station === 'dice' && stationViewMode === 'play' && (
-            <div className="absolute left-1/2 bottom-5 -translate-x-1/2 club-panel px-4 py-2.5 flex flex-wrap items-center justify-center gap-3 pointer-events-auto shadow-2xl">
+          {/* Dice Cup Action Strip (Active Immersed Play Mode Only, Collapsible via [H]) */}
+          {station === 'dice' && !hudCollapsed && (
+            <div className="absolute left-1/2 bottom-4 -translate-x-1/2 club-panel px-4 py-2 flex flex-wrap items-center justify-center gap-3 pointer-events-auto shadow-2xl">
               <div className="flex items-center gap-1.5 mr-1">
                 <span className="text-xs text-stone-400">Your Cup:</span>
                 {diceUi.playerFaces.map((f, idx) => (
