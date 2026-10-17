@@ -26,8 +26,10 @@ export interface DieSnapshot {
   qy: number;
   qz: number;
   qw: number;
-  phase: 'idle' | 'rolling' | 'tidy' | 'ready';
+  phase: 'idle' | 'shaking' | 'rolling' | 'tidy' | 'ready';
   face: number;
+  shakeProgress?: number;
+  throwElapsed?: number;
 }
 
 const FACE_AXES: Array<{ n: number; v: [number, number, number] }> = [
@@ -131,7 +133,7 @@ export class DieTray {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   world: any;
   acc = 0;
-  phase: 'idle' | 'rolling' | 'tidy' | 'ready' = 'idle';
+  phase: 'idle' | 'shaking' | 'rolling' | 'tidy' | 'ready' = 'idle';
   face = 0;
   rollNo = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -141,6 +143,9 @@ export class DieTray {
   _t = 0;
   _still = 0;
   _fix = 0;
+  _shakeT = 0;
+  _shakeDur = 0.48;
+  _throwPower = 0.6;
   _tween: {
     t: number;
     dur: number;
@@ -212,26 +217,41 @@ export class DieTray {
     };
   }
 
-  throwDie(power = 0.6): boolean {
-    if (this.phase === 'rolling' || this.phase === 'tidy') return false;
+  throwDie(power = 0.6, preShakenSeconds = 0): boolean {
+    if (this.phase === 'shaking' || this.phase === 'rolling' || this.phase === 'tidy') return false;
+    this._throwPower = Math.max(0, Math.min(1, power));
+    this._shakeT = 0;
+    // Vigorous cup shake phase before the die is thrown out of the cup mouth
+    this._shakeDur = Math.max(0.24, 0.52 - Math.min(0.28, preShakenSeconds * 0.4));
+    this.rollNo++;
+    this.face = 0;
+    this.phase = 'shaking';
+    this._t = 0;
+    this._still = 0;
+    this._fix = 0;
+    this._lastVy = 0;
+    this.hits = 0;
+    return true;
+  }
+
+  _launchFromCup(p: number): void {
     const R = this.R;
     const T = TRAY;
     const r = this.rng;
-    const p = Math.max(0, Math.min(1, power));
     if (this.body) this.world.removeRigidBody(this.body);
     this.body = this.world.createRigidBody(
       R.RigidBodyDesc.dynamic()
-        .setTranslation(r.range(-0.07, 0.07), 0.14 + r.range(0, 0.05), T.z1 - 0.04)
+        .setTranslation(r.range(-0.045, 0.045), 0.14 + r.range(0, 0.04), T.z1 - 0.035)
         .setRotation(this._randQuat())
         .setLinvel(
           r.range(-0.5, 0.5) * (0.5 + p),
-          r.range(0.6, 1.2),
-          -(1.3 + 1.7 * p) - r.range(0, 0.3),
+          r.range(0.55, 1.15),
+          -(1.35 + 1.7 * p) - r.range(0, 0.3),
         )
         .setAngvel({
-          x: r.range(-1, 1) * (20 + 24 * p),
-          y: r.range(-1, 1) * (20 + 24 * p),
-          z: r.range(-1, 1) * (20 + 24 * p),
+          x: r.range(-1, 1) * (22 + 24 * p),
+          y: r.range(-1, 1) * (22 + 24 * p),
+          z: r.range(-1, 1) * (22 + 24 * p),
         })
         .setCcdEnabled(true)
         .setLinearDamping(0.08)
@@ -244,15 +264,8 @@ export class DieTray {
         .setRestitution(0.38),
       this.body,
     );
-    this.rollNo++;
-    this.face = 0;
     this.phase = 'rolling';
     this._t = 0;
-    this._still = 0;
-    this._fix = 0;
-    this._lastVy = 0;
-    this.hits = 0;
-    return true;
   }
 
   _settled(): boolean {
@@ -262,6 +275,13 @@ export class DieTray {
   }
 
   step(dt: number): void {
+    if (this.phase === 'shaking') {
+      this._shakeT += Math.min(dt, 0.05);
+      if (this._shakeT >= this._shakeDur) {
+        this._launchFromCup(this._throwPower);
+      }
+      return;
+    }
     if (this.phase === 'rolling') {
       this.acc += Math.min(dt, 0.05);
       while (this.acc >= 1 / 240) {
@@ -333,6 +353,22 @@ export class DieTray {
   }
 
   snapshot(): DieSnapshot {
+    if (this.phase === 'shaking') {
+      const prog = Math.min(1, this._shakeT / Math.max(0.01, this._shakeDur));
+      return {
+        x: 0,
+        y: 0.16,
+        z: TRAY.z1 + 0.02,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qw: 1,
+        phase: 'shaking',
+        face: 0,
+        shakeProgress: prog,
+        throwElapsed: 0,
+      };
+    }
     if (this.phase === 'rolling' && this.body) {
       const t = this.body.translation();
       const q = this.body.rotation();
@@ -346,6 +382,8 @@ export class DieTray {
         qw: q.w,
         phase: this.phase,
         face: 0,
+        shakeProgress: 1,
+        throwElapsed: this._t,
       };
     }
     const p = this.pose;
@@ -359,13 +397,15 @@ export class DieTray {
       qw: p.q.w,
       phase: this.phase,
       face: this.face,
+      shakeProgress: 0,
+      throwElapsed: 1,
     };
   }
 
   run(maxSeconds = 20): number {
     let n = 0;
     const max = Math.floor(maxSeconds * 60);
-    while ((this.phase === 'rolling' || this.phase === 'tidy') && n++ < max) {
+    while ((this.phase === 'shaking' || this.phase === 'rolling' || this.phase === 'tidy') && n++ < max) {
       this.step(1 / 60);
     }
     return this.face;

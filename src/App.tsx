@@ -69,9 +69,9 @@ export default function App() {
   );
   const [station, setStation] = useState<StationId>(autoStart ? initialStation : 'none');
   const [stationViewMode, setStationViewMode] = useState<'view' | 'play'>('view');
-  const [tablePreview, setTablePreview] = useState<StationId | null>(null);
+  const [pausedGames, setPausedGames] = useState<Partial<Record<StationId, boolean>>>({});
+  const [showNavMenu, setShowNavMenu] = useState(false);
   const [loungeCam, setLoungeCam] = useState<'isometric' | 'fps'>('isometric');
-  const [dockCollapsed, setDockCollapsed] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showCreditsModal, setShowCreditsModal] = useState(false);
   const [showLudoConfig, setShowLudoConfig] = useState(false);
@@ -209,6 +209,9 @@ export default function App() {
   stationRef.current = station;
   const viewModeRef = useRef<'view' | 'play'>('view');
   viewModeRef.current = stationViewMode;
+  const pausedGamesRef = useRef<Partial<Record<StationId, boolean>>>({});
+  pausedGamesRef.current = pausedGames;
+  const userPlayedRef = useRef<Partial<Record<StationId, boolean>>>({});
   const langRef = useRef(lang);
   langRef.current = lang;
   const showAimRef = useRef(showAimLines);
@@ -217,11 +220,15 @@ export default function App() {
   closeUpRef.current = closeUpCam;
 
   const keysHeldRef = useRef<Set<string>>(new Set());
-  const chargeRef = useRef<{ active: boolean; t: number }>({ active: false, t: 0 });
+  const chargeRef = useRef<{ active: boolean; t: number; lastRattle: number }>({
+    active: false,
+    t: 0,
+    lastRattle: 0,
+  });
   const ludoCtrlRef = useRef<{
     runId: number;
     canRoll: boolean;
-    rollReq: number | null;
+    rollReq: { power: number; elapsed: number } | null;
     pickMoves: LudoMove[] | null;
     pickResolve: ((m: LudoMove) => void) | null;
     timers: Array<{ t: number; res: () => void; rej: (e: unknown) => void }>;
@@ -256,7 +263,8 @@ export default function App() {
             : 'playing';
     document.body.dataset.state = stateAttr;
     document.body.dataset.station = station;
-  }, [appMode, station]);
+    document.body.dataset.viewmode = stationViewMode;
+  }, [appMode, station, stationViewMode]);
 
   const showFlash = useCallback((title: string, sub = '', color = '#ffb84a') => {
     setFlashBanner({ title, sub, color });
@@ -391,23 +399,27 @@ export default function App() {
 
           if (st.phase === 'roll') {
             let power = 0.6;
+            let preShaken = 0;
             if (seat === 'human') {
               ctrl.canRoll = true;
               ctrl.rollReq = null;
               syncLudoReactState();
               await until(() => ctrl.rollReq != null);
-              power = ctrl.rollReq!;
+              power = ctrl.rollReq!.power;
+              preShaken = ctrl.rollReq!.elapsed;
               ctrl.canRoll = false;
               syncLudoReactState();
             } else {
-              await sleep(0.65);
+              await sleep(0.55);
               power = 0.45 + rng() * 0.52;
             }
 
             const tray = ludoTrayRef.current!;
-            tray.throwDie(power);
-            audioRef.current.play('throw');
+            tray.throwDie(power, preShaken);
+            audioRef.current.play('cupShake');
             world.ludoPhase = 'roll';
+            await until(() => tray.phase === 'rolling' || tray.phase === 'ready');
+            audioRef.current.play('throw');
             await until(() => tray.phase === 'ready');
             const face = tray.face;
             await sleep(0.28);
@@ -531,12 +543,97 @@ export default function App() {
     resolve(chosen);
   }, []);
 
-  // ------------------------------------------------------------------ ENTER / SWITCH STATIONS
+  // ------------------------------------------------------------------ ENTER / PAUSE / RESUME STATIONS
+  const enterPlayMode = useCallback(
+    (target?: StationId) => {
+      const st = target && target !== 'none' ? target : stationRef.current;
+      if (st === 'none' || st === 'arcade' || st === 'bartender' || st === 'jukebox') return;
+      audioRef.current.unlock();
+      audioRef.current.play('turn');
+      setShowNavMenu(false);
+
+      const wasPaused = Boolean(pausedGamesRef.current[st]);
+      userPlayedRef.current[st] = true;
+      pausedGamesRef.current = { ...pausedGamesRef.current, [st]: false };
+      setPausedGames({ ...pausedGamesRef.current });
+
+      stationRef.current = st;
+      viewModeRef.current = 'play';
+      modeRef.current = 'station';
+      setStation(st);
+      setStationViewMode('play');
+      setAppMode('station');
+
+      if (st === 'ludo' && !ludoCtrlRef.current.runId) {
+        startLudoMatch(ludoSeats, ludoDiff);
+      }
+      worldRef.current?.snapCamera(
+        'station',
+        st,
+        poolSimRef.current?.cue || { yaw: 0, lowSight: false },
+        true,
+      );
+
+      showFlash(
+        wasPaused
+          ? langRef.current === 'zh'
+            ? '已恢复对局'
+            : 'Match Resumed'
+          : langRef.current === 'zh'
+            ? '沉浸模式 · 对局开始'
+            : 'Immersed Play Mode',
+        langRef.current === 'zh'
+          ? '专注当前球桌 · 按 ESC 可暂停并离开漫步'
+          : 'Focused on your table · Press ESC anytime to pause & walk around',
+        '#5fe08a',
+      );
+    },
+    [ludoDiff, ludoSeats, showFlash, startLudoMatch],
+  );
+
+  const leaveAndPauseStation = useCallback(() => {
+    const currentSt = stationRef.current;
+    const wasPlaying = viewModeRef.current === 'play';
+    if (worldRef.current) {
+      worldRef.current.ludoManualShake = { active: false, power: 0 };
+    }
+    chargeRef.current.active = false;
+    setShowNavMenu(false);
+
+    if (
+      wasPlaying &&
+      (currentSt === 'pool' || currentSt === 'ludo' || currentSt === 'darts' || currentSt === 'dice')
+    ) {
+      userPlayedRef.current[currentSt] = true;
+      pausedGamesRef.current = { ...pausedGamesRef.current, [currentSt]: true };
+      setPausedGames({ ...pausedGamesRef.current });
+      const stLabel =
+        langRef.current === 'zh'
+          ? STATION_HOTSPOTS.find((h) => h.id === currentSt)?.labelZh
+          : STATION_HOTSPOTS.find((h) => h.id === currentSt)?.labelEn;
+      showFlash(
+        langRef.current === 'zh' ? `${stLabel} 已暂停保留` : `${stLabel} Paused`,
+        langRef.current === 'zh'
+          ? '可在俱乐部自由漫步，随时点击顶部恢复对局'
+          : 'Walk around freely — click Resume in the top bar anytime',
+        '#ffb84a',
+      );
+    }
+
+    stationRef.current = 'none';
+    viewModeRef.current = 'view';
+    modeRef.current = 'lounge';
+    setStation('none');
+    setStationViewMode('view');
+    setAppMode('lounge');
+    worldRef.current?.snapCamera('lounge', 'none', { yaw: 0, lowSight: false }, false);
+  }, [showFlash]);
+
   const activateStation = useCallback(
     (target: StationId, autoPlay = false) => {
       audioRef.current.unlock();
       audioRef.current.play('tick');
-      setTablePreview(null);
+      setShowNavMenu(false);
       if (target === 'bartender') {
         audioRef.current.play('pourBeer');
         worldRef.current?.triggerBartenderToast();
@@ -561,18 +658,18 @@ export default function App() {
         return;
       }
       if (target === 'none') {
-        stationRef.current = 'none';
-        modeRef.current = 'lounge';
-        setStation('none');
-        setStationViewMode('view');
-        setAppMode('lounge');
-        worldRef.current?.snapCamera('lounge', 'none');
+        leaveAndPauseStation();
+        return;
+      }
+      if (autoPlay) {
+        enterPlayMode(target);
         return;
       }
       stationRef.current = target;
+      viewModeRef.current = 'view';
       modeRef.current = 'station';
       setStation(target);
-      setStationViewMode(autoPlay ? 'play' : 'view');
+      setStationViewMode('view');
       setAppMode('station');
       if (target === 'ludo' && !ludoCtrlRef.current.runId) {
         startLudoMatch(ludoSeats, ludoDiff);
@@ -582,10 +679,11 @@ export default function App() {
           'station',
           target,
           poolSimRef.current?.cue || { yaw: 0, lowSight: false },
+          false,
         );
       }
     },
-    [ludoDiff, ludoSeats, showFlash, startLudoMatch],
+    [enterPlayMode, leaveAndPauseStation, ludoDiff, ludoSeats, showFlash, startLudoMatch],
   );
 
   const handleStartFromTitle = useCallback(
@@ -597,7 +695,7 @@ export default function App() {
       }
       keysHeldRef.current.clear();
       if (initialTarget !== 'none') {
-        activateStation(initialTarget);
+        activateStation(initialTarget, true);
       } else {
         setStation('none');
         setAppMode('lounge');
@@ -614,20 +712,28 @@ export default function App() {
     if (st === 'ludo' && !ludoCtrlRef.current.canRoll) return;
     if (st === 'pool' && poolSimRef.current?.phase !== 'aiming') return;
     audioRef.current.unlock();
-    chargeRef.current = { active: true, t: 0 };
+    chargeRef.current = { active: true, t: 0, lastRattle: 0 };
+    if (st === 'ludo' && worldRef.current) {
+      worldRef.current.ludoManualShake = { active: true, power: 0.25 };
+      worldRef.current.setLudoDie(ludoTrayRef.current?.snapshot() || null);
+      audioRef.current.play('cupShake');
+    }
   }, []);
 
   const releaseCharge = useCallback(() => {
     if (!chargeRef.current.active) return;
     const elapsed = chargeRef.current.t;
     chargeRef.current.active = false;
+    if (worldRef.current) {
+      worldRef.current.ludoManualShake = { active: false, power: 0 };
+    }
     const power = 0.22 + 0.78 * Math.min(1, elapsed / 0.9);
     const st = stationRef.current;
 
     if (st === 'ludo') {
       const ctrl = ludoCtrlRef.current;
       if (ctrl.canRoll) {
-        ctrl.rollReq = power;
+        ctrl.rollReq = { power, elapsed };
         ctrl.canRoll = false;
       }
     } else if (st === 'pool') {
@@ -828,53 +934,72 @@ export default function App() {
           setNpcBubble((prev) => (prev.visible ? { ...prev, visible: false } : prev));
         }
 
-        // 2. Advance Ludo timers, waits, and physical DieTray
+        // 2. Advance Ludo timers, waits, and physical DieTray ONLY when Ludo is actively played
         const ctrl = ludoCtrlRef.current;
-        for (const tmr of ctrl.timers) tmr.t -= dt;
-        const due = ctrl.timers.filter((x) => x.t <= 0);
-        ctrl.timers = ctrl.timers.filter((x) => x.t > 0);
-        due.forEach((x) => x.res());
+        const ludoActive =
+          !paused && stationRef.current === 'ludo' && viewModeRef.current === 'play';
+        const ludoDt = ludoActive ? dt : 0;
 
-        const ready = ctrl.waits.filter((x) => x.fn());
-        ctrl.waits = ctrl.waits.filter((x) => !x.fn());
-        ready.forEach((x) => x.res());
+        if (ludoActive) {
+          for (const tmr of ctrl.timers) tmr.t -= ludoDt;
+          const due = ctrl.timers.filter((x) => x.t <= 0);
+          ctrl.timers = ctrl.timers.filter((x) => x.t > 0);
+          due.forEach((x) => x.res());
+
+          const ready = ctrl.waits.filter((x) => x.fn());
+          ctrl.waits = ctrl.waits.filter((x) => !x.fn());
+          ready.forEach((x) => x.res());
+        }
 
         const tray = ludoTrayRef.current;
         if (tray) {
-          tray.step(dt);
+          if (ludoActive) {
+            tray.step(ludoDt);
+          }
           world.setLudoDie(tray.snapshot());
-          if (tray.hits > lastTrayHits) {
-            audioRef.current.play('hit', { gain: 0.75 });
+          if (ludoActive) {
+            if (tray.hits > lastTrayHits) {
+              audioRef.current.play('hit', { gain: 0.75 });
+            }
+            lastTrayHits = tray.hits;
+            if (lastTrayPhase === 'rolling' && tray.phase === 'tidy') {
+              audioRef.current.play('land');
+            }
+            lastTrayPhase = tray.phase;
           }
-          lastTrayHits = tray.hits;
-          if (lastTrayPhase === 'rolling' && tray.phase === 'tidy') {
-            audioRef.current.play('land');
-          }
-          lastTrayPhase = tray.phase;
         }
 
-        // 3. Advance 8-Ball Pool physics (plus autonomous NPC pool shots when idle in lounge!)
+        // 3. Advance 8-Ball Pool physics (never disturb a user's active or paused Pool match!)
         if (pool.phase === 'rolling') {
-          pool.step(rawDt);
-          if (pool.collisionCount > lastPoolCollisions) {
-            audioRef.current.play('ballClack');
-            lastPoolCollisions = pool.collisionCount;
-          }
-          if (pool.shotPocketed.length > lastPoolPockets) {
-            audioRef.current.play('pocketDrop');
-            lastPoolPockets = pool.shotPocketed.length;
-          }
-          if (pool.phase !== 'rolling') {
-            lastPoolPockets = 0;
-            syncPoolReactState();
-            if (pool.phase === 'over' && stationRef.current === 'pool') {
-              setAppMode('gameover');
+          if (stationRef.current === 'pool' || !pausedGamesRef.current.pool) {
+            pool.step(rawDt);
+            if (stationRef.current === 'pool') {
+              if (pool.collisionCount > lastPoolCollisions) {
+                audioRef.current.play('ballClack');
+                lastPoolCollisions = pool.collisionCount;
+              }
+              if (pool.shotPocketed.length > lastPoolPockets) {
+                audioRef.current.play('pocketDrop');
+                lastPoolPockets = pool.shotPocketed.length;
+              }
+            }
+            if (pool.phase !== 'rolling') {
+              lastPoolPockets = 0;
+              syncPoolReactState();
+              if (pool.phase === 'over' && stationRef.current === 'pool') {
+                setAppMode('gameover');
+              }
             }
           }
-        } else if (stationRef.current !== 'pool' && !paused) {
+        } else if (
+          stationRef.current === 'none' &&
+          !paused &&
+          !pausedGamesRef.current.pool &&
+          !userPlayedRef.current.pool
+        ) {
           npcPoolShotTimer -= rawDt;
           if (npcPoolShotTimer <= 0) {
-            npcPoolShotTimer = 5.5 + Math.random() * 4.0;
+            npcPoolShotTimer = 6.5 + Math.random() * 4.5;
             pool.cue.yaw = Math.random() * Math.PI * 2;
             pool.strike(0.35 + Math.random() * 0.35);
           }
@@ -899,11 +1024,18 @@ export default function App() {
         );
         world.syncDiceCupState(dice.playerDice, dice.cupLifted);
 
-        // 5. Update Power Charge Bar DOM directly
+        // 5. Update Power Charge Bar DOM directly + Ludo 3D Shaker Cup rattle
         if (chargeRef.current.active && !paused) {
           chargeRef.current.t += rawDt;
           const u = Math.min(1, chargeRef.current.t / 0.9);
           const n = Math.round(u * POWER_SEGS);
+          if (stationRef.current === 'ludo') {
+            world.ludoManualShake = { active: true, power: u };
+            if (chargeRef.current.t - chargeRef.current.lastRattle > 0.085) {
+              chargeRef.current.lastRattle = chargeRef.current.t;
+              audioRef.current.play('cupShake', { gain: 0.7 + u * 0.4 });
+            }
+          }
           if (powerBarRef.current) {
             const children = powerBarRef.current.children;
             const col = u > 0.8 ? '#ff6a5a' : u > 0.45 ? '#ffb84a' : '#5fe08a';
@@ -915,7 +1047,11 @@ export default function App() {
           if (chargeRef.current.t > 1.55) releaseCharge();
         }
 
-        // 6. Update Scene Camera & Render through 3D Pixel Post-Processor
+        // 6. Update Scene Camera & Render (with Full Immersion Isolation when playing a station)
+        const isImmersedPlay =
+          viewModeRef.current === 'play' &&
+          stationRef.current !== 'none' &&
+          stationRef.current !== 'arcade';
         world.update(
           paused ? 0 : rawDt,
           modeRef.current,
@@ -924,6 +1060,7 @@ export default function App() {
           pool.closeUpTarget,
           closeUpRef.current,
           lobby.remoteAvatar,
+          isImmersedPlay,
         );
 
         // 7. Project 3D Ludo Pawn Tags & Die Number Tag onto screen
@@ -1008,7 +1145,18 @@ export default function App() {
         return;
       }
 
-      if (code === 'Escape' || code === 'KeyP') {
+      if (code === 'Escape') {
+        e.preventDefault();
+        if (stationRef.current !== 'none') {
+          // Leaving a table pauses the active game and returns to the Lounge to walk around!
+          leaveAndPauseStation();
+          return;
+        }
+        setAppMode((prev) => (prev === 'paused' ? 'lounge' : 'paused'));
+        return;
+      }
+
+      if (code === 'KeyP') {
         e.preventDefault();
         setAppMode((prev) =>
           prev === 'paused' ? (stationRef.current !== 'none' ? 'station' : 'lounge') : 'paused',
@@ -1018,8 +1166,9 @@ export default function App() {
 
       if (modeRef.current === 'paused') return;
 
-      if (code === 'KeyH') {
-        setDockCollapsed((prev) => !prev);
+      if (code === 'Tab') {
+        e.preventDefault();
+        setShowNavMenu((prev) => !prev);
         return;
       }
       if (code === 'KeyM') {
@@ -1043,27 +1192,22 @@ export default function App() {
           });
         } else if (code === 'KeyE' || code === 'Enter') {
           if (nearbyHotspot !== 'none') {
-            activateStation(nearbyHotspot, false);
+            activateStation(nearbyHotspot, Boolean(pausedGamesRef.current[nearbyHotspot]));
           }
         }
         return;
       }
 
-      // Station View Mode: Space/Enter starts playing; Esc/V/E exits to lounge
+      // Station View Mode: Space/Enter sits down in Full Immersion Play mode; V/E exits to lounge
       if (viewModeRef.current === 'view') {
         if (code === 'Space' || code === 'Enter') {
           e.preventDefault();
-          setStationViewMode('play');
-          showFlash(
-            langRef.current === 'zh' ? '入座开始游戏' : 'Game Started',
-            langRef.current === 'zh' ? '按键或点击进行操作' : 'Use controls or mouse to play',
-            '#5fe08a',
-          );
+          enterPlayMode(st);
           return;
         }
-        if (code === 'Escape' || code === 'KeyV' || code === 'KeyE') {
+        if (code === 'KeyV' || code === 'KeyE') {
           e.preventDefault();
-          activateStation('none');
+          leaveAndPauseStation();
           return;
         }
       }
@@ -1159,7 +1303,9 @@ export default function App() {
     activateStation,
     beginCharge,
     chooseLudoMoveForToken,
+    enterPlayMode,
     handleStartFromTitle,
+    leaveAndPauseStation,
     nearbyHotspot,
     releaseCharge,
     syncDiceReactState,
@@ -1458,58 +1604,208 @@ export default function App() {
       )}
 
       {/* ==================================================================
-          2. ACTIVE GAMEPLAY HUD (LOUNGE & STATIONS)
+          2. NON-INVASIVE GAMEPLAY & LOUNGE HUD
          ================================================================== */}
       {appMode !== 'title' && (
         <div className="fixed inset-0 pointer-events-none z-30">
-          {/* Top-Left Brand & Active Mode Indicator */}
-          <div className="absolute left-2.5 sm:left-4 top-2.5 sm:top-4 flex items-center gap-1.5 pointer-events-auto max-w-[55vw] sm:max-w-none">
-            <div className="club-panel px-2.5 sm:px-3.5 py-1.5 sm:py-2 flex items-center gap-2 sm:gap-3 truncate">
-              <span className="font-display font-bold text-amber-400 tracking-wider text-xs sm:text-sm shrink-0">
-                {t.clubTitle}
-              </span>
-              <span className="text-stone-500 hidden sm:inline">·</span>
-              <span className="text-[11px] sm:text-xs font-semibold text-cyan-300 truncate">
-                {station === 'none'
-                  ? `${t.loungeMode}`
-                  : station === 'ludo'
-                    ? t.stationLudo
-                    : station === 'pool'
-                      ? t.stationPool
-                      : station === 'darts'
-                        ? t.stationDarts
-                        : station === 'dice'
-                          ? t.stationDice
-                          : t.stationArcade}
-              </span>
-            </div>
+          {/* Top-Left Navigation Pill & Paused Game Resume Chips */}
+          <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2 pointer-events-auto max-w-[68vw]">
+            {station !== 'none' && stationViewMode === 'play' ? (
+              /* Immersed Play Mode: Clean Leave & Pause Button */
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={leaveAndPauseStation}
+                  className="club-btn club-btn-gold text-xs py-2 px-3.5 flex items-center gap-1.5 font-extrabold shadow-lg"
+                >
+                  <span>⏸ {lang === 'zh' ? '暂停并离开球桌' : 'Leave & Pause'}</span>
+                  <kbd className="club-kbd text-[10px]">ESC</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStationViewMode('view')}
+                  className="club-btn text-xs py-2 px-2.5"
+                  title="Inspect Table"
+                >
+                  👁️ {lang === 'zh' ? '环视' : 'Inspect'}
+                </button>
+              </div>
+            ) : (
+              /* Lounge / Inspection Mode: Compact Brand Pill + Expandable Map Popover */
+              <div className="relative flex items-center gap-1.5">
+                <div className="club-panel px-3 py-1.5 flex items-center gap-2">
+                  <span className="font-display font-bold text-amber-400 tracking-wider text-xs sm:text-sm">
+                    {t.clubTitle}
+                  </span>
+                  <span className="text-stone-500">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowNavMenu((v) => !v)}
+                    aria-expanded={showNavMenu}
+                    className="text-xs font-bold text-cyan-300 hover:text-white flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>
+                      {station === 'none'
+                        ? lang === 'zh'
+                          ? '快速导航'
+                          : 'Club Map'
+                        : lang === 'zh'
+                          ? STATION_HOTSPOTS.find((h) => h.id === station)?.labelZh
+                          : STATION_HOTSPOTS.find((h) => h.id === station)?.labelEn}
+                    </span>
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
 
-            {station !== 'none' && (
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setStationViewMode((m) => (m === 'view' ? 'play' : 'view'))}
-                  className="club-btn text-xs py-1.5 sm:py-2 px-2.5 font-bold"
-                >
-                  {stationViewMode === 'view' ? '🎮 Play' : '👁️ View'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => activateStation('none')}
-                  className="club-btn text-xs py-1.5 sm:py-2 px-2.5 sm:px-3 shrink-0"
-                >
-                  ← <span className="hidden sm:inline">{t.leaveStation}</span>
-                </button>
+                {station !== 'none' && (
+                  <button
+                    type="button"
+                    onClick={leaveAndPauseStation}
+                    className="club-btn text-xs py-1.5 px-2.5"
+                  >
+                    ← {t.leaveStation}
+                  </button>
+                )}
+
+                {/* Paused Game One-Click Resume Chips while Walking Around */}
+                {station === 'none' &&
+                  (['pool', 'ludo', 'darts', 'dice'] as StationId[])
+                    .filter((id) => pausedGames[id])
+                    .map((id) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => enterPlayMode(id)}
+                        className="club-btn club-btn-gold text-xs py-1.5 px-3 flex items-center gap-1.5 shadow-md"
+                      >
+                        <span>
+                          ▶ {lang === 'zh' ? '继续' : 'Resume'}{' '}
+                          {id === 'pool'
+                            ? lang === 'zh'
+                              ? '台球'
+                              : 'Pool'
+                            : id === 'ludo'
+                              ? 'Ludo'
+                              : id === 'darts'
+                                ? lang === 'zh'
+                                  ? '飞镖'
+                                  : 'Darts'
+                                : lang === 'zh'
+                                  ? '骰盅'
+                                  : 'Dice'}
+                        </span>
+                      </button>
+                    ))}
+
+                {/* Compact Floating Club Map Popover (Replaces Invasive Bottom Bar) */}
+                {showNavMenu && (
+                  <div className="absolute left-0 top-11 club-panel p-2 w-56 flex flex-col gap-1 z-50 shadow-2xl">
+                    <div className="px-2.5 py-1 text-[10px] font-bold text-stone-400 uppercase tracking-wider flex justify-between">
+                      <span>{lang === 'zh' ? '选择机台或区域' : 'Jump to Zone'}</span>
+                      <span>[TAB]</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('none')}
+                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
+                        station === 'none' ? 'club-btn-active' : ''
+                      }`}
+                    >
+                      <span>🚶 {t.loungeMode}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('pool', Boolean(pausedGames.pool))}
+                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
+                        station === 'pool' ? 'club-btn-active' : ''
+                      }`}
+                    >
+                      <span>🎱 {t.stationPool}</span>
+                      {pausedGames.pool && (
+                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('ludo', Boolean(pausedGames.ludo))}
+                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
+                        station === 'ludo' ? 'club-btn-active' : ''
+                      }`}
+                    >
+                      <span>🎲 {t.stationLudo}</span>
+                      {pausedGames.ludo && (
+                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('darts', Boolean(pausedGames.darts))}
+                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
+                        station === 'darts' ? 'club-btn-active' : ''
+                      }`}
+                    >
+                      <span>🎯 {t.stationDarts}</span>
+                      {pausedGames.darts && (
+                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('dice', Boolean(pausedGames.dice))}
+                      className={`club-btn text-xs py-1.5 px-2.5 text-left flex items-center justify-between ${
+                        station === 'dice' ? 'club-btn-active' : ''
+                      }`}
+                    >
+                      <span>🥤 {t.stationDice}</span>
+                      {pausedGames.dice && (
+                        <span className="text-[10px] text-amber-300 font-bold">PAUSED</span>
+                      )}
+                    </button>
+                    <div className="border-t border-white/10 my-0.5" />
+                    <button
+                      type="button"
+                      onClick={() => activateStation('arcade')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center gap-1.5"
+                    >
+                      <Users className="w-3.5 h-3.5 text-cyan-300" />
+                      <span>{t.stationArcade}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => activateStation('bartender')}
+                      className="club-btn text-xs py-1.5 px-2.5 text-left"
+                    >
+                      🍺 {t.stationBartender}
+                    </button>
+                    {station === 'none' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoungeCam((prev) => {
+                            const next = prev === 'isometric' ? 'fps' : 'isometric';
+                            if (worldRef.current) worldRef.current.loungeCamMode = next;
+                            return next;
+                          });
+                          setShowNavMenu(false);
+                        }}
+                        className="club-btn text-xs py-1.5 px-2.5 text-left flex items-center gap-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{loungeCam === 'isometric' ? t.isoView : t.fpsView} [V]</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* Top-Right Compact Utility Buttons */}
-          <div className="absolute right-2.5 sm:right-4 top-2.5 sm:top-4 flex items-center gap-1.5 pointer-events-auto">
+          {/* Top-Right Compact Utility Icons */}
+          <div className="absolute right-3 top-3 flex items-center gap-1.5 pointer-events-auto">
             <button
               type="button"
               onClick={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
-              className="club-btn text-xs py-1.5 sm:py-2 px-2 sm:px-2.5"
+              className="club-btn text-xs py-1.5 px-2"
               aria-label="Toggle Language"
             >
               {lang === 'zh' ? 'EN' : '中文'}
@@ -1517,7 +1813,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => activateStation('jukebox')}
-              className="club-btn text-xs py-1.5 sm:py-2 px-2 sm:px-2.5 flex items-center gap-1"
+              className="club-btn text-xs py-1.5 px-2 flex items-center gap-1"
               aria-label="Switch Jukebox Track"
               title={t.tracks[jukeboxTrack]}
             >
@@ -1533,144 +1829,178 @@ export default function App() {
                   return next;
                 });
               }}
-              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5"
+              className="club-btn py-1.5 px-2"
               aria-label={t.soundMute}
             >
-              {muted ? <VolumeX className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />}
+              {muted ? (
+                <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+              ) : (
+                <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+              )}
             </button>
             <button
               type="button"
               onClick={() => setShowSettingsModal(true)}
-              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5"
+              className="club-btn py-1.5 px-2"
               aria-label={t.settings}
             >
-              <Settings className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setAppMode((m) => (m === 'paused' ? 'lounge' : 'paused'))}
-              className="club-btn py-1.5 sm:py-2 px-2 sm:px-2.5 hidden sm:inline-flex"
-              aria-label={t.pauseTitle}
-            >
-              <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <Settings className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Center-Top Turn / Status Readout Banner */}
+          {/* Center-Top Sleek Single-Line Game Status Pill */}
           {station === 'ludo' && (
-            <div className="absolute left-1/2 top-4 -translate-x-1/2 flex flex-col items-center gap-2 pointer-events-auto">
-              <div className="club-panel px-4 py-2 flex items-center gap-3">
+            <div className="absolute left-1/2 top-3 -translate-x-1/2 club-panel px-3.5 py-1.5 flex flex-wrap items-center justify-center gap-2.5 pointer-events-auto max-w-[92vw]">
+              <div className="flex items-center gap-2">
                 <span
-                  className="w-4 h-4 rounded-full border border-white/50 shrink-0"
+                  className="w-3.5 h-3.5 rounded-full border border-white/60 shrink-0"
                   style={{ background: COLOR_CSS[ludoSnapshot.turn] }}
                 />
-                <span className="font-display font-bold text-base tracking-wide">
+                <span className="font-display font-bold text-sm tracking-wide">
                   {lang === 'zh'
                     ? COLOR_NAMES_ZH[ludoSnapshot.turn]
                     : COLOR_NAMES[ludoSnapshot.turn].toUpperCase()}
                 </span>
-                <span className="text-xs font-bold text-stone-400 uppercase tracking-wider">
+                <span className="text-xs font-bold text-stone-300">
                   {ludoSnapshot.pickMoves.length > 0
                     ? ludoSnapshot.seats[ludoSnapshot.turn] === 'human'
                       ? t.pickPawn
                       : t.cpuThinking
                     : ludoSnapshot.canRoll
-                      ? t.yourThrow
+                      ? lang === 'zh'
+                        ? '摇晃骰盅掷骰'
+                        : 'SHAKE CUP & ROLL'
                       : t.cpuRolling}
                 </span>
                 {ludoSnapshot.die != null && (
-                  <span className="font-mono-tabular text-sm font-extrabold px-2 py-0.5 rounded bg-amber-400 text-stone-950">
+                  <span className="font-mono-tabular text-xs font-extrabold px-2 py-0.5 rounded bg-amber-400 text-stone-950">
                     🎲 {ludoSnapshot.die}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowLudoConfig((v) => !v)}
-                  className="club-btn text-xs py-1 px-2.5 ml-1"
-                >
-                  {t.players}
-                </button>
               </div>
 
-              {/* Compact 4-Color Pip Strip */}
-              <div className="flex items-center gap-2">
+              {/* Inline 4-Color Score Pips */}
+              <div className="hidden md:flex items-center gap-1.5 border-x border-white/10 px-2.5">
                 {ludoSnapshot.seats.map((seat, c) => {
                   if (seat === 'off') return null;
                   return (
                     <div
                       key={c}
-                      className={`club-panel px-2.5 py-1.5 flex items-center gap-2 transition-opacity ${
-                        ludoSnapshot.turn === c ? 'opacity-100 ring-2 ring-amber-400' : 'opacity-65'
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${
+                        ludoSnapshot.turn === c ? 'bg-white/10 ring-1 ring-amber-400' : 'opacity-60'
                       }`}
                     >
                       <span
-                        className="w-2.5 h-2.5 rounded-full"
+                        className="w-2 h-2 rounded-full"
                         style={{ background: COLOR_CSS[c] }}
                       />
-                      <span className="text-xs font-bold">
-                        {lang === 'zh' ? COLOR_NAMES_ZH[c] : COLOR_NAMES[c]}
+                      <span className="font-mono-tabular text-[11px] font-bold">
+                        {homeCount(ludoStateRef.current, c)}/4
                       </span>
-                      <div className="flex gap-1">
-                        {ludoSnapshot.tokens[c].map((p, ti) => (
-                          <span
-                            key={ti}
-                            className="w-3 h-3 rounded-full border"
-                            style={{
-                              borderColor: p >= 0 ? COLOR_CSS[c] : 'rgba(255,255,255,0.25)',
-                              background:
-                                p === P_HOME
-                                  ? COLOR_CSS[c]
-                                  : p >= 0
-                                    ? `${COLOR_CSS[c]}66`
-                                    : 'rgba(255,255,255,0.08)',
-                            }}
-                          />
-                        ))}
-                      </div>
                     </div>
                   );
                 })}
               </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLudoCam((prev) => {
+                      const next =
+                        LUDO_CAM_MODES[(LUDO_CAM_MODES.indexOf(prev) + 1) % LUDO_CAM_MODES.length];
+                      if (worldRef.current) worldRef.current.ludoCamMode = next;
+                      return next;
+                    });
+                  }}
+                  className="club-btn text-[11px] py-1 px-2"
+                >
+                  {ludoCam.toUpperCase()} [C]
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLudoFast((prev) => {
+                      const next = !prev;
+                      if (worldRef.current) worldRef.current.speed = next ? 2.2 : 1.0;
+                      return next;
+                    });
+                  }}
+                  className={`club-btn text-[11px] py-1 px-2 ${ludoFast ? 'club-btn-gold' : ''}`}
+                >
+                  {ludoFast ? '2x' : '1x'} [F]
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLudoConfig((v) => !v)}
+                  className="club-btn text-[11px] py-1 px-2"
+                >
+                  {t.players}
+                </button>
+              </div>
             </div>
           )}
 
-          {/* Pool Top Scoreboard Banner */}
+          {/* Pool Sleek Top Scoreboard Pill */}
           {station === 'pool' && (
-            <div className="absolute left-1/2 top-4 -translate-x-1/2 club-panel px-5 py-2.5 flex items-center gap-5 pointer-events-auto">
-              <div className={`flex items-center gap-2 ${poolUi.turn === 0 ? 'text-amber-400 font-bold' : 'text-stone-400'}`}>
+            <div className="absolute left-1/2 top-3 -translate-x-1/2 club-panel px-4 py-1.5 flex flex-wrap items-center justify-center gap-3 pointer-events-auto max-w-[92vw]">
+              <div className={`flex items-center gap-1.5 text-xs sm:text-sm ${poolUi.turn === 0 ? 'text-amber-400 font-bold' : 'text-stone-400'}`}>
                 <span>P1 ({poolUi.suits[0] || t.poolOpen})</span>
-                <span className="font-mono-tabular text-lg">{poolUi.scores[0]}</span>
+                <span className="font-mono-tabular text-base">{poolUi.scores[0]}</span>
               </div>
-              <span className="text-stone-500">VS</span>
-              <div className={`flex items-center gap-2 ${poolUi.turn === 1 ? 'text-cyan-300 font-bold' : 'text-stone-400'}`}>
-                <span className="font-mono-tabular text-lg">{poolUi.scores[1]}</span>
+              <span className="text-stone-500 text-xs">VS</span>
+              <div className={`flex items-center gap-1.5 text-xs sm:text-sm ${poolUi.turn === 1 ? 'text-cyan-300 font-bold' : 'text-stone-400'}`}>
+                <span className="font-mono-tabular text-base">{poolUi.scores[1]}</span>
                 <span>P2 ({poolUi.suits[1] || t.poolOpen})</span>
               </div>
-              {poolUi.comboStreak > 1 && (
-                <span className="text-xs font-bold text-amber-400">
-                  🔥 {poolUi.comboStreak}x COMBO
-                </span>
+              <span className="text-xs text-stone-300 hidden lg:inline">· {poolUi.message}</span>
+              {stationViewMode === 'play' && (
+                <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (poolSimRef.current) {
+                        poolSimRef.current.cue.lowSight = !poolSimRef.current.cue.lowSight;
+                        syncPoolReactState();
+                      }
+                    }}
+                    className={`club-btn text-[11px] py-1 px-2 ${poolUi.lowSight ? 'club-btn-gold' : ''}`}
+                  >
+                    {t.poolLowSight}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      poolSimRef.current?.rackBalls();
+                      syncPoolReactState();
+                    }}
+                    className="club-btn text-[11px] py-1 px-2 flex items-center gap-1"
+                    title={t.poolRerack}
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span className="hidden sm:inline">{t.poolRerack}</span>
+                  </button>
+                </div>
               )}
-              <span className="text-xs text-stone-300 hidden md:inline">· {poolUi.message}</span>
             </div>
           )}
 
-          {/* Darts Top Scoreboard Banner */}
+          {/* Darts Top Scoreboard Pill */}
           {station === 'darts' && (
-            <div className="absolute left-1/2 top-4 -translate-x-1/2 club-panel px-5 py-2.5 flex items-center gap-5 pointer-events-auto">
-              <div>
-                <span className="text-xs text-stone-400 mr-1.5">{t.dartsRound}</span>
+            <div className="absolute left-1/2 top-3 -translate-x-1/2 club-panel px-4 py-1.5 flex items-center gap-4 pointer-events-auto">
+              <div className="text-xs">
+                <span className="text-stone-400 mr-1">{t.dartsRound}</span>
                 <span className="font-mono-tabular font-bold text-amber-400">
                   {dartsUi.round}/3
                 </span>
               </div>
-              <div className={dartsUi.turn === 0 ? 'text-amber-400 font-bold' : 'text-stone-400'}>
-                YOU: <span className="font-mono-tabular text-lg">{dartsUi.scores[0]}</span>
+              <div className={`text-xs sm:text-sm ${dartsUi.turn === 0 ? 'text-amber-400 font-bold' : 'text-stone-400'}`}>
+                YOU: <span className="font-mono-tabular text-base">{dartsUi.scores[0]}</span>
               </div>
-              <div className={dartsUi.turn === 1 ? 'text-cyan-300 font-bold' : 'text-stone-400'}>
-                CPU: <span className="font-mono-tabular text-lg">{dartsUi.scores[1]}</span>
+              <div className={`text-xs sm:text-sm ${dartsUi.turn === 1 ? 'text-cyan-300 font-bold' : 'text-stone-400'}`}>
+                CPU: <span className="font-mono-tabular text-base">{dartsUi.scores[1]}</span>
               </div>
-              <div className="text-xs text-stone-300">
+              <div className="text-xs text-stone-300 hidden sm:block">
                 🎯 ×{dartsUi.dartsLeft} · {t.dartsWind}:{' '}
                 <span className="font-mono-tabular text-cyan-300">
                   {(dartsUi.wind[0] * 100).toFixed(1)}, {(dartsUi.wind[1] * 100).toFixed(1)}
@@ -1678,20 +2008,20 @@ export default function App() {
               </div>
               {dartsUi.unlocked180 && (
                 <span className="text-xs font-extrabold text-amber-400 flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5" /> 180 BADGE
+                  <Sparkles className="w-3.5 h-3.5" /> 180
                 </span>
               )}
             </div>
           )}
 
-          {/* Dice Cup Top Scoreboard Banner */}
+          {/* Dice Cup Top Scoreboard Pill */}
           {station === 'dice' && (
-            <div className="absolute left-1/2 top-4 -translate-x-1/2 club-panel px-5 py-2.5 flex items-center gap-5 pointer-events-auto">
-              <div className="text-amber-400 font-bold">
-                YOU: <span className="font-mono-tabular text-lg">{diceUi.scores[0]}</span>
+            <div className="absolute left-1/2 top-3 -translate-x-1/2 club-panel px-4 py-1.5 flex items-center gap-4 pointer-events-auto">
+              <div className="text-amber-400 font-bold text-xs sm:text-sm">
+                YOU: <span className="font-mono-tabular text-base">{diceUi.scores[0]}</span>
               </div>
-              <div className="text-cyan-300 font-bold">
-                REGULAR: <span className="font-mono-tabular text-lg">{diceUi.scores[1]}</span>
+              <div className="text-cyan-300 font-bold text-xs sm:text-sm">
+                REGULAR: <span className="font-mono-tabular text-base">{diceUi.scores[1]}</span>
               </div>
               <span className="text-xs text-stone-200">{diceUi.message}</span>
             </div>
@@ -1712,12 +2042,12 @@ export default function App() {
             </div>
           )}
 
-          {/* Station View / Inspection Card (Click table to VIEW, then choose to play) */}
+          {/* Station View / Inspection Card (Click table to VIEW, then choose to Sit Down & Play or Resume) */}
           {station !== 'none' && station !== 'arcade' && stationViewMode === 'view' && (
-            <div className="absolute left-1/2 bottom-20 sm:bottom-24 -translate-x-1/2 club-panel p-4 md:p-5 w-[min(94vw,480px)] flex flex-col gap-3 pointer-events-auto shadow-2xl z-30 border border-amber-400/35">
+            <div className="absolute left-1/2 bottom-6 -translate-x-1/2 club-panel p-4 w-[min(92vw,440px)] flex flex-col gap-3 pointer-events-auto shadow-2xl z-30 border border-amber-400/35">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <span className="text-3xl sm:text-4xl">
+                  <span className="text-3xl">
                     {station === 'pool'
                       ? '🎱'
                       : station === 'ludo'
@@ -1728,29 +2058,37 @@ export default function App() {
                   </span>
                   <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="font-display font-bold text-base sm:text-lg text-amber-300">
+                      <h3 className="font-display font-bold text-base text-amber-300">
                         {lang === 'zh'
                           ? STATION_HOTSPOTS.find((h) => h.id === station)?.labelZh
                           : STATION_HOTSPOTS.find((h) => h.id === station)?.labelEn}
                       </h3>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
-                        {lang === 'zh' ? '观摩巡视中' : 'VIEWING'}
+                      <span className="text-[11px] text-cyan-300 font-semibold">
+                        · {pausedGames[station] ? (lang === 'zh' ? '对局已暂停' : 'PAUSED') : (lang === 'zh' ? '观摩中' : 'VIEWING')}
                       </span>
                     </div>
                     <p className="text-xs text-stone-300 mt-0.5">
                       {station === 'pool'
-                        ? (lang === 'zh' ? '中式八球 · 57.2mm标准球物理碰触 · 拖拽鼠标旋转视角巡视' : 'Chinese 8-Ball · 57.2mm Physics · Drag to Orbit')
+                        ? lang === 'zh'
+                          ? '中式八球 · 入座后进入全屏专注台球模式'
+                          : 'Chinese 8-Ball · Sit down for distraction-free table immersion'
                         : station === 'ludo'
-                          ? (lang === 'zh' ? '4人对战飞行棋 · 真实物理骰盅掷骰 · 拖拽旋转观察棋盘' : '4-Player Ludo · Physical Tumbling Dice Tray · Drag to Orbit')
+                          ? lang === 'zh'
+                            ? '俱乐部飞行棋 · 3D皮革骰盅摇晃掷骰 · 独立骰盘'
+                            : '4-Player Ludo · Vigorous 3D Shaker Cup & Felt Dice Tray'
                           : station === 'darts'
-                            ? (lang === 'zh' ? '20分区标准飞镖 · 钨钢镖身与风向物理' : '20-Zone Regulation Sisal Dartboard')
-                            : (lang === 'zh' ? '大话骰盅 · 5粒真实物理骰子摇晃对决' : "Liar's Dice · 5 Shaker Dice Showdown")}
+                            ? lang === 'zh'
+                              ? '20分区标准飞镖 · 钨钢镖身与风向物理'
+                              : '20-Zone Regulation Sisal Dartboard'
+                            : lang === 'zh'
+                              ? '大话骰盅 · 5粒真实物理骰子摇晃对决'
+                              : "Liar's Dice · 5 Shaker Dice Showdown"}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => activateStation('none')}
+                  onClick={leaveAndPauseStation}
                   className="text-stone-400 hover:text-white px-2 py-1 text-sm rounded cursor-pointer"
                   title="Close View"
                 >
@@ -1758,155 +2096,135 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="flex items-center gap-2 pt-1">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setStationViewMode('play');
-                    showFlash(
-                      lang === 'zh' ? '入座开始游戏' : 'Game Started',
-                      lang === 'zh' ? '按键或点击进行操作' : 'Use controls or mouse to play',
-                      '#5fe08a',
-                    );
-                  }}
+                  onClick={() => enterPlayMode(station)}
                   className="club-btn club-btn-gold flex-1 text-sm py-2.5 font-extrabold flex justify-center items-center gap-2 cursor-pointer shadow-lg"
                 >
-                  <span>🎮 {lang === 'zh' ? '入座开始游戏' : 'Sit Down & Play'}</span>
+                  <span>
+                    {pausedGames[station]
+                      ? lang === 'zh'
+                        ? '▶ 继续对局 (沉浸模式)'
+                        : '▶ Resume Game'
+                      : lang === 'zh'
+                        ? '🎮 入座开始游戏'
+                        : '🎮 Sit Down & Play'}
+                  </span>
                   <kbd className="club-kbd text-[10px]">SPACE</kbd>
                 </button>
                 <button
                   type="button"
-                  onClick={() => activateStation('none')}
-                  className="club-btn flex-1 text-xs py-2.5 flex justify-center items-center gap-1 cursor-pointer"
+                  onClick={leaveAndPauseStation}
+                  className="club-btn text-xs py-2.5 px-3.5 flex justify-center items-center gap-1 cursor-pointer"
                 >
-                  <span>🚶 {lang === 'zh' ? '返回全景漫步' : 'Back to Lounge'}</span>
+                  <span>🚶 {lang === 'zh' ? '漫步' : 'Walk Around'}</span>
                   <kbd className="club-kbd text-[10px]">ESC</kbd>
                 </button>
               </div>
             </div>
           )}
 
-          {/* Mobile Touch Virtual D-Pad (Effortless Mobile Walking) */}
-          {station === 'none' && appMode === 'lounge' && (
-            <div className="absolute left-4 bottom-24 pointer-events-auto flex flex-col items-center gap-1.5 md:hidden z-20 opacity-80 hover:opacity-100 transition-opacity">
-              <button
-                type="button"
-                onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyW'); }}
-                onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyW'); }}
-                onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyW'); }}
-                className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
-              >
-                ▲
-              </button>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyA'); }}
-                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyA'); }}
-                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyA'); }}
-                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
-                >
-                  ◀
-                </button>
-                <button
-                  type="button"
-                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyS'); }}
-                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyS'); }}
-                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyS'); }}
-                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
-                >
-                  ▼
-                </button>
-                <button
-                  type="button"
-                  onPointerDown={(e) => { e.preventDefault(); keysHeldRef.current.add('KeyD'); }}
-                  onPointerUp={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyD'); }}
-                  onPointerCancel={(e) => { e.preventDefault(); keysHeldRef.current.delete('KeyD'); }}
-                  className="w-11 h-11 rounded-xl bg-slate-900/80 border border-white/20 text-white font-bold flex items-center justify-center text-lg active:bg-cyan-500/40"
-                >
-                  ▶
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Lounge Proximity Interaction Prompt */}
+          {/* Lounge Proximity Interaction Pill */}
           {station === 'none' && nearbyHotspot !== 'none' && (
-            <div
-              className={`absolute left-1/2 -translate-x-1/2 pointer-events-auto transition-all z-20 ${
-                dockCollapsed ? 'bottom-16 sm:bottom-14' : 'bottom-36 sm:bottom-28'
-              }`}
-            >
+            <div className="absolute left-1/2 bottom-12 -translate-x-1/2 pointer-events-auto z-20">
               <button
                 type="button"
-                onClick={() => activateStation(nearbyHotspot, false)}
-                className="club-btn club-btn-gold px-4 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm flex items-center gap-2 shadow-xl whitespace-nowrap cursor-pointer"
+                onClick={() =>
+                  activateStation(nearbyHotspot, Boolean(pausedGames[nearbyHotspot]))
+                }
+                className="club-btn club-btn-gold px-5 py-2.5 text-xs sm:text-sm flex items-center gap-2 shadow-xl whitespace-nowrap cursor-pointer"
               >
                 <span>
-                  {lang === 'zh'
-                    ? `观摩 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
-                    : `View ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`}
+                  {pausedGames[nearbyHotspot]
+                    ? lang === 'zh'
+                      ? `▶ 继续 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
+                      : `▶ Resume ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`
+                    : lang === 'zh'
+                      ? `观摩 ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelZh}`
+                      : `Inspect ${STATION_HOTSPOTS.find((h) => h.id === nearbyHotspot)?.labelEn}`}
                 </span>
                 <kbd className="club-kbd text-[10px]">E</kbd>
               </button>
             </div>
           )}
 
-          {/* Power Charge Bar & Hold-to-Throw / Strike Action above Bottom Dock (Active Play Mode Only) */}
-          {(station === 'ludo' || station === 'pool' || station === 'darts') && stationViewMode === 'play' && (
-            <div
-              className={`absolute left-1/2 -translate-x-1/2 flex items-center gap-3 pointer-events-auto transition-all ${
-                dockCollapsed ? 'bottom-14' : 'bottom-24'
-              }`}
-            >
-              {/* 14-Segment Rainbow Power Bar */}
-              <div className="club-panel px-3 py-2 w-64">
-                <div className="flex justify-between text-[11px] font-bold text-amber-400 mb-1">
-                  <span>{t.throwPower}</span>
-                  <span>SPACE / CLICK</span>
-                </div>
-                <div
-                  ref={powerBarRef}
-                  className="grid grid-cols-14 gap-1 p-1 bg-black/50 rounded-md"
-                >
-                  {Array.from({ length: POWER_SEGS }).map((_, i) => (
-                    <i
-                      key={i}
-                      className="h-3 rounded-sm bg-white/10 block transition-colors"
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {(station !== 'ludo' || ludoSnapshot.canRoll) && (
-                <button
-                  type="button"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    beginCharge();
-                  }}
-                  onPointerUp={releaseCharge}
-                  onPointerCancel={releaseCharge}
-                  className="club-btn club-btn-gold px-5 py-3 text-sm font-extrabold"
-                >
-                  {station === 'ludo'
-                    ? t.holdToThrow
-                    : station === 'pool'
-                      ? t.poolStrike
-                      : t.dartsThrow}
-                </button>
-              )}
+          {/* Subtle Non-Invasive Lounge Footer Hint */}
+          {station === 'none' && (
+            <div className="absolute left-1/2 bottom-3 -translate-x-1/2 text-[11px] text-stone-300/80 bg-black/55 px-3.5 py-1 rounded-full border border-white/10 pointer-events-none whitespace-nowrap">
+              {lang === 'zh'
+                ? '点击地面移动 · 点击任意球桌观摩 · WASD 行走 · V 切换视角'
+                : 'Click floor to walk · Click any table to inspect · WASD Move · V Camera'}
             </div>
           )}
 
-          {/* Dice Cup Action Strip (Active Play Mode Only) */}
+          {/* Compact Action Pill at Bottom Center (Active Immersed Play Mode Only) */}
+          {(station === 'ludo' || station === 'pool' || station === 'darts') &&
+            stationViewMode === 'play' && (
+              <div className="absolute left-1/2 bottom-5 -translate-x-1/2 club-panel px-4 py-2.5 flex items-center gap-3 pointer-events-auto shadow-2xl">
+                <div className="w-44 sm:w-56">
+                  <div className="flex justify-between text-[10px] font-bold text-amber-400 mb-1">
+                    <span>
+                      {station === 'ludo'
+                        ? lang === 'zh'
+                          ? '摇晃骰盅力度'
+                          : 'CUP SHAKE POWER'
+                        : t.throwPower}
+                    </span>
+                    <span>SPACE / HOLD</span>
+                  </div>
+                  <div
+                    ref={powerBarRef}
+                    className="grid grid-cols-14 gap-1 p-1 bg-black/60 rounded-md"
+                  >
+                    {Array.from({ length: POWER_SEGS }).map((_, i) => (
+                      <i
+                        key={i}
+                        className="h-2.5 rounded-sm bg-white/10 block transition-colors"
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {(station !== 'ludo' || ludoSnapshot.canRoll) && (
+                  <button
+                    type="button"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      beginCharge();
+                    }}
+                    onPointerUp={releaseCharge}
+                    onPointerCancel={releaseCharge}
+                    className="club-btn club-btn-gold px-4 sm:px-5 py-2.5 text-xs sm:text-sm font-extrabold"
+                  >
+                    {station === 'ludo'
+                      ? lang === 'zh'
+                        ? '🥤 按住摇晃骰盅掷出'
+                        : '🥤 Shake Cup & Throw'
+                      : station === 'pool'
+                        ? t.poolStrike
+                        : t.dartsThrow}
+                  </button>
+                )}
+
+                {station === 'ludo' && !ludoSnapshot.canRoll && (
+                  <span className="text-xs font-bold text-cyan-300 px-2">
+                    {ludoSnapshot.pickMoves.length > 0
+                      ? lang === 'zh'
+                        ? '点击棋盘上发光的棋子 (1-4)'
+                        : 'Click a glowing pawn (1-4)'
+                      : lang === 'zh'
+                        ? '骰盅摇晃投掷中...'
+                        : 'Cup shaking & rolling...'}
+                  </span>
+                )}
+              </div>
+            )}
+
+          {/* Dice Cup Action Strip (Active Immersed Play Mode Only) */}
           {station === 'dice' && stationViewMode === 'play' && (
-            <div
-              className={`absolute left-1/2 -translate-x-1/2 club-panel px-4 py-2.5 flex flex-wrap items-center justify-center gap-3 pointer-events-auto transition-all ${
-                dockCollapsed ? 'bottom-14' : 'bottom-24'
-              }`}
-            >
-              <div className="flex items-center gap-1.5 mr-2">
+            <div className="absolute left-1/2 bottom-5 -translate-x-1/2 club-panel px-4 py-2.5 flex flex-wrap items-center justify-center gap-3 pointer-events-auto shadow-2xl">
+              <div className="flex items-center gap-1.5 mr-1">
                 <span className="text-xs text-stone-400">Your Cup:</span>
                 {diceUi.playerFaces.map((f, idx) => (
                   <span
@@ -1919,7 +2237,7 @@ export default function App() {
               </div>
 
               {diceUi.cupLifted && (
-                <div className="flex items-center gap-1.5 mr-2">
+                <div className="flex items-center gap-1.5 mr-1">
                   <span className="text-xs text-cyan-300">Regular:</span>
                   {diceUi.cpuFaces.map((f, idx) => (
                     <span
@@ -1936,6 +2254,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   diceSimRef.current?.shakeAndRoll();
+                  audioRef.current.play('cupShake');
                   audioRef.current.play('throw');
                   syncDiceReactState();
                 }}
@@ -1996,180 +2315,6 @@ export default function App() {
               </button>
             </div>
           )}
-
-          {/* ==============================================================
-              COLLAPSIBLE BOTTOM CONTROL DOCK (Zero Side-Panel Occlusion)
-             ============================================================== */}
-          <div className="absolute left-1/2 bottom-3 -translate-x-1/2 w-[min(1200px,96vw)] flex flex-col items-center pointer-events-auto">
-            <button
-              type="button"
-              onClick={() => setDockCollapsed((c) => !c)}
-              className="club-panel px-3 py-1 text-[11px] font-bold text-stone-300 hover:text-white flex items-center gap-1.5 mb-1 cursor-pointer"
-            >
-              {dockCollapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              <span>{dockCollapsed ? 'Show Controls [H]' : 'Hide Controls [H]'}</span>
-            </button>
-
-            {!dockCollapsed && (
-              <div className="club-panel w-full px-3 py-2 flex items-center justify-between gap-2 overflow-x-auto">
-                {/* Station Switcher Tabs */}
-                <div className="flex items-center gap-1.5 flex-nowrap">
-                  <button
-                    type="button"
-                    onClick={() => activateStation('none')}
-                    className={`club-btn text-xs py-1.5 px-2.5 ${station === 'none' ? 'club-btn-active' : ''}`}
-                  >
-                    {t.loungeMode}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('ludo')}
-                    className={`club-btn text-xs py-1.5 px-2.5 ${station === 'ludo' ? 'club-btn-active' : ''}`}
-                  >
-                    🎲 {t.stationLudo}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('pool')}
-                    className={`club-btn text-xs py-1.5 px-2.5 ${station === 'pool' ? 'club-btn-active' : ''}`}
-                  >
-                    🎱 {t.stationPool}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('darts')}
-                    className={`club-btn text-xs py-1.5 px-2.5 ${station === 'darts' ? 'club-btn-active' : ''}`}
-                  >
-                    🎯 {t.stationDarts}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('dice')}
-                    className={`club-btn text-xs py-1.5 px-2.5 ${station === 'dice' ? 'club-btn-active' : ''}`}
-                  >
-                    🥤 {t.stationDice}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('arcade')}
-                    className={`club-btn text-xs py-1.5 px-2.5 flex items-center gap-1 ${station === 'arcade' ? 'club-btn-active' : ''}`}
-                  >
-                    <Users className="w-3.5 h-3.5" />
-                    <span>P2P Lobby</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateStation('bartender')}
-                    className="club-btn text-xs py-1.5 px-2.5"
-                  >
-                    🍺 {t.stationBartender}
-                  </button>
-                </div>
-
-                {/* Context-Sensitive Station Tools */}
-                <div className="flex items-center gap-1.5 shrink-0">
-                  {station !== 'none' && station !== 'arcade' && (
-                    <button
-                      type="button"
-                      onClick={() => setStationViewMode((m) => (m === 'view' ? 'play' : 'view'))}
-                      className={`club-btn text-xs py-1.5 px-2.5 font-bold flex items-center gap-1 ${
-                        stationViewMode === 'play' ? 'club-btn-gold' : ''
-                      }`}
-                    >
-                      {stationViewMode === 'view' ? '🎮 Play Game' : '👁️ View Mode'}
-                    </button>
-                  )}
-                  {station === 'none' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoungeCam((prev) => {
-                          const next = prev === 'isometric' ? 'fps' : 'isometric';
-                          if (worldRef.current) worldRef.current.loungeCamMode = next;
-                          return next;
-                        });
-                      }}
-                      className="club-btn text-xs py-1.5 px-2.5 flex items-center gap-1"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>{loungeCam === 'isometric' ? t.isoView : t.fpsView} [V]</span>
-                    </button>
-                  )}
-
-                  {station === 'ludo' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLudoCam((prev) => {
-                            const next =
-                              LUDO_CAM_MODES[(LUDO_CAM_MODES.indexOf(prev) + 1) % LUDO_CAM_MODES.length];
-                            if (worldRef.current) worldRef.current.ludoCamMode = next;
-                            return next;
-                          });
-                        }}
-                        className="club-btn text-xs py-1.5 px-2.5"
-                      >
-                        CAM: {ludoCam.toUpperCase()} [C]
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setLudoFast((prev) => {
-                            const next = !prev;
-                            if (worldRef.current) worldRef.current.speed = next ? 2.2 : 1.0;
-                            return next;
-                          });
-                        }}
-                        className={`club-btn text-xs py-1.5 px-2.5 ${ludoFast ? 'club-btn-gold' : ''}`}
-                      >
-                        {ludoFast ? '2.2x FAST' : '1x SPEED'} [F]
-                      </button>
-                    </>
-                  )}
-
-                  {station === 'pool' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (poolSimRef.current) {
-                            poolSimRef.current.cue.lowSight = !poolSimRef.current.cue.lowSight;
-                            syncPoolReactState();
-                          }
-                        }}
-                        className={`club-btn text-xs py-1.5 px-2.5 ${poolUi.lowSight ? 'club-btn-gold' : ''}`}
-                      >
-                        {t.poolLowSight}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          poolSimRef.current?.rackBalls();
-                          syncPoolReactState();
-                        }}
-                        className="club-btn text-xs py-1.5 px-2.5 flex items-center gap-1"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>{t.poolRerack}</span>
-                      </button>
-                      {poolUi.replayLen > 0 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setPoolUi((p) => ({ ...p, replayMode: !p.replayMode, replayIdx: 0 }))
-                          }
-                          className={`club-btn text-xs py-1.5 px-2.5 ${poolUi.replayMode ? 'club-btn-gold' : ''}`}
-                        >
-                          {t.poolReplay}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       )}
 

@@ -68,7 +68,7 @@ export const LUDO_ORIGIN = new THREE.Vector3(-2.45, 0.76, 2.35);
 export const LUDO_CELL = 0.05;
 export const LUDO_BOARD_SIZE = LUDO_CELL * 15;
 export const LUDO_BOARD_Y = 0.03;
-export const LUDO_LAYOUT = { boardX: -0.18, trayX: 0.42 };
+export const LUDO_LAYOUT = { boardX: -0.34, trayX: 0.50 };
 export const bx = (u: number): number => (u - 7.5) * LUDO_CELL;
 
 // Pool world origin (central table)
@@ -165,6 +165,7 @@ export class ClubWorld {
   // Ludo table state
   ludoGroup = new THREE.Group();
   ludoTrayGroup = new THREE.Group();
+  ludoCupGroup = new THREE.Group();
   ludoPawns: PawnActor[] = [];
   ludoPawnMeshes: THREE.Object3D[] = [];
   ludoHints: THREE.Mesh[] = [];
@@ -175,6 +176,8 @@ export class ClubWorld {
   ludoCamMode: LudoCamMode = 'auto';
   ludoPhase: 'roll' | 'play' = 'roll';
   ludoOrbit = { yaw: 0, pitch: 0.95, dist: 1.25 };
+  ludoManualShake = { active: false, power: 0 };
+  lastDieSnap: DieSnapshot | null = null;
   onHop: ((step: number, pw: PawnActor) => void) | null = null;
   onLand: ((pw: PawnActor) => void) | null = null;
 
@@ -197,7 +200,11 @@ export class ClubWorld {
   cupMesh!: THREE.Group;
   cupDiceMeshes: THREE.Mesh[] = [];
 
-  // Living bar props
+  // Living bar props & Immersion groups
+  loungeDecorGroup = new THREE.Group();
+  poolRugMesh!: THREE.Mesh;
+  ludoRugMesh!: THREE.Mesh;
+  bartenderGrp = new THREE.Group();
   arcadeCanvases: Array<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture }> = [];
   arcadeTick = 0;
   fireLight!: THREE.PointLight;
@@ -245,6 +252,7 @@ export class ClubWorld {
     this.pixelPost = new PixelPostProcessor(renderer);
     this.resize();
 
+    this.scene.add(this.loungeDecorGroup);
     this._buildLights();
     this._buildLoungeArchitecture();
     this._buildNeonSignsAndDecor();
@@ -358,7 +366,7 @@ export class ClubWorld {
     wallLeft.receiveShadow = true;
     const wainscotLeft = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.25, 8.8), darkWainscotMat);
     wainscotLeft.position.set(-5.64, 0.625, 0);
-    this.scene.add(wallLeft, wainscotLeft);
+    this.loungeDecorGroup.add(wallLeft, wainscotLeft);
 
     // Back-right wall (behind neon sign & dartboard, z = -4.25)
     const wallBack = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.3, 0.3), upperWallMat);
@@ -370,7 +378,7 @@ export class ClubWorld {
     chairRail.position.set(0, 1.25, -4.23);
     const baseboard = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.12, 0.36), mouldingMat);
     baseboard.position.set(0, 0.06, -4.23);
-    this.scene.add(wallBack, wainscotBack, chairRail, baseboard);
+    this.loungeDecorGroup.add(wallBack, wainscotBack, chairRail, baseboard);
 
     // Right wall (fireplace & back bar, x = +5.65)
     const wallRight = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4.3, 8.8), upperWallMat);
@@ -378,7 +386,7 @@ export class ClubWorld {
     wallRight.receiveShadow = true;
     const wainscotRight = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.25, 8.8), darkWainscotMat);
     wainscotRight.position.set(5.64, 0.625, 0);
-    this.scene.add(wallRight, wainscotRight);
+    this.loungeDecorGroup.add(wallRight, wainscotRight);
 
     // Vertical timber pilasters along walls for architectural depth
     const pilasterMat = new THREE.MeshStandardMaterial({
@@ -388,7 +396,7 @@ export class ClubWorld {
     for (const x of [-5.2, -2.5, 0.5, 3.6, 5.4]) {
       const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.22, 4.35, 0.22), pilasterMat);
       pilaster.position.set(x, 2.15, -4.08);
-      this.scene.add(pilaster);
+      this.loungeDecorGroup.add(pilaster);
     }
 
     // 1. Ornate Persian Rugs on Floor (Pool Table, Hearth, and Ludo)
@@ -403,6 +411,7 @@ export class ClubWorld {
     poolRug.rotation.x = -Math.PI / 2;
     poolRug.position.set(POOL_ORIGIN.x, 0.002, POOL_ORIGIN.z);
     poolRug.receiveShadow = true;
+    this.poolRugMesh = poolRug;
     this.scene.add(poolRug);
 
     const hearthRug = new THREE.Mesh(
@@ -417,7 +426,7 @@ export class ClubWorld {
     hearthRug.rotation.z = Math.PI / 2;
     hearthRug.position.set(3.8, 0.002, -1.25);
     hearthRug.receiveShadow = true;
-    this.scene.add(hearthRug);
+    this.loungeDecorGroup.add(hearthRug);
 
     const ludoRug = new THREE.Mesh(
       new THREE.PlaneGeometry(2.4, 1.8),
@@ -430,6 +439,7 @@ export class ClubWorld {
     ludoRug.rotation.x = -Math.PI / 2;
     ludoRug.position.set(LUDO_ORIGIN.x, 0.002, LUDO_ORIGIN.z);
     ludoRug.receiveShadow = true;
+    this.ludoRugMesh = ludoRug;
     this.scene.add(ludoRug);
 
     // 2. Ceiling Dark Oak Architectural Beams
@@ -440,25 +450,25 @@ export class ClubWorld {
     for (const z of [-3.1, -1.1, 0.9, 2.9]) {
       const beam = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.22, 0.28), beamMat);
       beam.position.set(0, 4.25, z);
-      this.scene.add(beam);
+      this.loungeDecorGroup.add(beam);
     }
 
     // 3. Framed High-Res Vintage Posters on Walls
     const posterMat1 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('billiards'), roughness: 0.35 });
     const p1 = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.15), posterMat1);
     p1.position.set(3.4, 2.75, -4.07);
-    this.scene.add(p1);
+    this.loungeDecorGroup.add(p1);
 
     const posterMat2 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('jazz'), roughness: 0.35 });
     const p2 = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 1.15), posterMat2);
     p2.position.set(-3.2, 2.75, -4.07);
-    this.scene.add(p2);
+    this.loungeDecorGroup.add(p2);
 
     const posterMat3 = new THREE.MeshStandardMaterial({ map: vintagePosterTex('cocktail'), roughness: 0.35 });
     const p3 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 1.05), posterMat3);
     p3.rotation.y = -Math.PI / 2;
     p3.position.set(5.48, 2.8, -3.1);
-    this.scene.add(p3);
+    this.loungeDecorGroup.add(p3);
 
     // 4. Corner Tavern Brass Planter with Lush Greenery (between jukebox and wall)
     const brassMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.75, roughness: 0.25 });
@@ -479,7 +489,7 @@ export class ClubWorld {
       leaf.position.set(Math.cos(ang) * 0.11, 0.55, Math.sin(ang) * 0.11);
       potGrp.add(leaf);
     }
-    this.scene.add(potGrp);
+    this.loungeDecorGroup.add(potGrp);
 
     // Warm brass wall sconces along back wall
     for (const sx of [-3.8, 2.05]) {
@@ -495,7 +505,7 @@ export class ClubWorld {
 
       const sconceLight = new THREE.PointLight(0xffb84a, 6.0, 4.2, 1.6);
       sconceLight.position.set(sx, 2.48, -3.9);
-      this.scene.add(sconceArm, sconceShade, sconceLight);
+      this.loungeDecorGroup.add(sconceArm, sconceShade, sconceLight);
     }
   }
 
@@ -521,7 +531,7 @@ export class ClubWorld {
     const botBar = topBar.clone();
     botBar.position.set(0, -0.56, 0.08);
     signGrp.add(topBar, botBar);
-    this.scene.add(signGrp);
+    this.loungeDecorGroup.add(signGrp);
 
     // 2. Framed pixel wall portraits on left wall & back wall (matching reference image)
     const frameWood = new THREE.MeshStandardMaterial({ color: 0x4a2c14, roughness: 0.7 });
@@ -535,7 +545,7 @@ export class ClubWorld {
       );
       pic.add(b, art);
       pic.position.set(-5.46, 3.1 + (i % 2) * 0.35, -2.8 + i * 0.85);
-      this.scene.add(pic);
+      this.loungeDecorGroup.add(pic);
     }
 
     // Wall AC unit on upper-left wall (just like reference image!)
@@ -551,7 +561,7 @@ export class ClubWorld {
     acVent.position.y = -0.1;
     acUnit.add(acBody, acVent);
     acUnit.position.set(-5.35, 3.65, 1.35);
-    this.scene.add(acUnit);
+    this.loungeDecorGroup.add(acUnit);
   }
 
   private _buildArcadeRow(): void {
@@ -640,7 +650,7 @@ export class ClubWorld {
         g.add(topperBox, topperSign);
       }
 
-      this.scene.add(g);
+      this.loungeDecorGroup.add(g);
     });
   }
 
@@ -688,7 +698,7 @@ export class ClubWorld {
     fireInner.position.set(-0.45, 0.36, 0);
 
     fpGroup.add(chimney, mantel, hearthBack, log1, fireOuter, fireInner);
-    this.scene.add(fpGroup);
+    this.loungeDecorGroup.add(fpGroup);
 
     // Rising pixel fireplace embers + pool spotlight dust motes (InstancedMesh)
     const emberCount = 36;
@@ -706,7 +716,7 @@ export class ClubWorld {
         phase: Math.random() * 6.28,
       });
     }
-    this.scene.add(this.emberInstanced);
+    this.loungeDecorGroup.add(this.emberInstanced);
 
     // 2. Oak Bar Counter, Back-Bar Liquor Shelves & Stools (front-right, x = 4.15, z = 1.95)
     const barGroup = new THREE.Group();
@@ -767,7 +777,7 @@ export class ClubWorld {
       stool.position.set(-0.78, 0, sz);
       barGroup.add(stool);
     }
-    this.scene.add(barGroup);
+    this.loungeDecorGroup.add(barGroup);
 
     // 3. Corner Pixel Jukebox (x = 4.55, z = -3.35)
     const juke = new THREE.Group();
@@ -790,7 +800,7 @@ export class ClubWorld {
     );
     jGrill.position.set(0, 0.75, 0.28);
     juke.add(jBody, jArch, jGrill);
-    this.scene.add(juke);
+    this.loungeDecorGroup.add(juke);
   }
 
   private _makeBeerMug(x: number, y: number, z: number): THREE.Group {
@@ -1134,23 +1144,23 @@ export class ClubWorld {
       map: feltClothTex('#117a43', 404),
       roughness: 0.92,
     });
-    const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.09, 1.22), tableWood);
-    tableTop.position.set(0.08, -0.045, 0);
+    const tableTop = new THREE.Mesh(new THREE.BoxGeometry(2.04, 0.09, 1.24), tableWood);
+    tableTop.position.set(0.06, -0.045, 0);
     tableTop.castShadow = true;
     tableTop.receiveShadow = true;
     root.add(tableTop);
 
-    const tableFeltPlane = new THREE.Mesh(new THREE.PlaneGeometry(1.58, 1.06), tableFelt);
+    const tableFeltPlane = new THREE.Mesh(new THREE.PlaneGeometry(1.86, 1.08), tableFelt);
     tableFeltPlane.rotation.x = -Math.PI / 2;
-    tableFeltPlane.position.set(0.08, 0.002, 0);
+    tableFeltPlane.position.set(0.06, 0.002, 0);
     tableFeltPlane.receiveShadow = true;
     root.add(tableFeltPlane);
 
     for (const [lx, lz] of [
-      [-0.68, -0.48],
-      [0.84, -0.48],
-      [-0.68, 0.48],
-      [0.84, 0.48],
+      [-0.84, -0.48],
+      [0.94, -0.48],
+      [-0.84, 0.48],
+      [0.94, 0.48],
     ]) {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.74, 0.08), tableWood);
       leg.position.set(lx, -0.39, lz);
@@ -1332,6 +1342,56 @@ export class ClubWorld {
     );
     this.ludoDieMesh.castShadow = true;
     tGrp.add(this.ludoDieMesh);
+
+    // 4. Composite 5-Part 3D Leather & Brass Shaker Cup for Ludo Dice Rolling
+    const cupGrp = this.ludoCupGroup;
+    const cupLeatherMat = new THREE.MeshStandardMaterial({
+      color: 0x3a1c0e,
+      roughness: 0.52,
+      metalness: 0.08,
+    });
+    const cupBrassMat = new THREE.MeshStandardMaterial({
+      color: 0xd4a838,
+      metalness: 0.78,
+      roughness: 0.24,
+    });
+    const cupInnerMat = new THREE.MeshStandardMaterial({
+      color: 0x0d1a12,
+      roughness: 0.95,
+      side: THREE.DoubleSide,
+    });
+
+    const cupShell = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.064, 0.052, 0.14, 16, 1, true),
+      cupLeatherMat,
+    );
+    const cupInterior = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.059, 0.047, 0.134, 16, 1, true),
+      cupInnerMat,
+    );
+    const cupBottom = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.054, 0.054, 0.016, 16),
+      cupBrassMat,
+    );
+    cupBottom.position.y = -0.066;
+
+    const cupLip = new THREE.Mesh(new THREE.TorusGeometry(0.064, 0.0055, 10, 20), cupBrassMat);
+    cupLip.rotation.x = Math.PI / 2;
+    cupLip.position.y = 0.07;
+
+    const cupBand1 = new THREE.Mesh(new THREE.TorusGeometry(0.059, 0.0038, 8, 20), cupBrassMat);
+    cupBand1.rotation.x = Math.PI / 2;
+    cupBand1.position.y = 0.015;
+
+    const cupBand2 = new THREE.Mesh(new THREE.TorusGeometry(0.056, 0.0038, 8, 20), cupBrassMat);
+    cupBand2.rotation.x = Math.PI / 2;
+    cupBand2.position.y = -0.028;
+
+    cupShell.castShadow = true;
+    cupGrp.add(cupShell, cupInterior, cupBottom, cupLip, cupBand1, cupBand2);
+    cupGrp.position.set(0.145, 0.074, T.z1 + 0.048);
+    tGrp.add(cupGrp);
+
     this.setLudoDie(null);
     this._applyLudoPawns(0, true);
   }
@@ -1486,8 +1546,15 @@ export class ClubWorld {
   }
 
   setLudoDie(s: DieSnapshot | null): void {
+    this.lastDieSnap = s;
     const d = this.ludoDieMesh;
     if (!d) return;
+    if (this.ludoManualShake.active || s?.phase === 'shaking') {
+      // Die is tucked inside the vigorously shaking cup before being thrown out
+      d.visible = false;
+      return;
+    }
+    d.visible = true;
     if (!s) {
       const q = quatFaceUp(6, 0.3);
       d.position.set(TRAY.rest.x, TRAY.half, TRAY.rest.z);
@@ -1660,6 +1727,16 @@ export class ClubWorld {
       map: walnutTrimTex([82, 46, 22], 61, [2, 2]),
       roughness: 0.65,
     });
+    const wallBackdrop = new THREE.Mesh(
+      new THREE.BoxGeometry(2.4, 2.2, 0.08),
+      new THREE.MeshStandardMaterial({
+        map: walnutTrimTex([55, 30, 16], 33, [3, 1]),
+        roughness: 0.65,
+      }),
+    );
+    wallBackdrop.position.set(0, -0.1, -0.08);
+    g.add(wallBackdrop);
+
     // Cabinet back + open scoreboard wings (matching reference image!)
     const cabBack = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.72, 0.06), woodMat);
     const wingL = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.68, 0.04), woodMat);
@@ -1844,7 +1921,8 @@ export class ClubWorld {
     bChar.grp.position.set(4.85, 0, 1.85);
     bChar.grp.rotation.y = -Math.PI / 2;
     this.bartenderArm = bChar.armR;
-    this.scene.add(bChar.grp);
+    this.bartenderGrp = bChar.grp;
+    this.loungeDecorGroup.add(bChar.grp);
 
     // 4. Lounge Patrons matching the reference image (around Pool, Darts, Ludo, Arcade, and Bar)
     const patronSpecs: Array<{
@@ -1916,17 +1994,39 @@ export class ClubWorld {
     poolCue: { yaw: number; lowSight: boolean },
     poolCloseUp: { pocketIdx: number; ballId: number } | null,
     closeUpEnabled: boolean,
+    isImmersedPlay = false,
   ): void {
+    const immersedGame =
+      isImmersedPlay &&
+      (station === 'pool' || station === 'ludo' || station === 'darts' || station === 'dice');
+
+    // Full Immersion Isolation: When sitting down to play a game, hide all other stations & club distractions
+    this.loungeDecorGroup.visible = !immersedGame;
+    this.poolGroup.visible = !immersedGame || station === 'pool';
+    if (this.poolRugMesh) this.poolRugMesh.visible = !immersedGame || station === 'pool';
+    this.ludoGroup.visible = !immersedGame || station === 'ludo';
+    if (this.ludoRugMesh) this.ludoRugMesh.visible = !immersedGame || station === 'ludo';
+    this.dartsGroup.visible = !immersedGame || station === 'darts';
+    this.diceTableGroup.visible = !immersedGame || station === 'dice';
+
     this.player.grp.visible =
+      !immersedGame &&
       (appMode === 'lounge' || appMode === 'title') &&
       station === 'none' &&
       this.loungeCamMode !== 'fps';
 
     this.npcs.forEach((npc) => {
-      if (station === 'ludo' && npc.role === 'ludo') npc.grp.visible = false;
-      else if (station === 'darts' && npc.role === 'darts') npc.grp.visible = false;
-      else if (station === 'pool' && poolCue.lowSight && npc.role === 'pool') npc.grp.visible = false;
-      else npc.grp.visible = true;
+      if (immersedGame) {
+        npc.grp.visible = false;
+      } else if (station === 'ludo' && npc.role === 'ludo') {
+        npc.grp.visible = false;
+      } else if (station === 'darts' && npc.role === 'darts') {
+        npc.grp.visible = false;
+      } else if (station === 'pool' && poolCue.lowSight && npc.role === 'pool') {
+        npc.grp.visible = false;
+      } else {
+        npc.grp.visible = true;
+      }
     });
 
     if (appMode === 'title') {
@@ -1941,25 +2041,23 @@ export class ClubWorld {
     if (station === 'ludo') {
       const O = LUDO_ORIGIN;
       const L = LUDO_LAYOUT;
-      const fov = 40;
       const mode =
         this.ludoCamMode !== 'auto'
           ? this.ludoCamMode
           : this.ludoPhase === 'roll'
             ? 'rollcam'
             : 'board';
-      let shot: { pos: THREE.Vector3; look: THREE.Vector3; fov: number };
       this.camK = 3.6;
 
       if (mode === 'top') {
         const center = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
         this.tgtLook.copy(center);
-        this.tgtPos.set(center.x, center.y + 1.85, center.z + 0.01);
+        this.tgtPos.set(center.x, center.y + 1.95, center.z + 0.01);
         this.tgtFov = 42;
       } else if (mode === 'dice') {
-        const trayCenter = new THREE.Vector3(O.x + L.trayX, O.y + 0.05, O.z);
+        const trayCenter = new THREE.Vector3(O.x + L.trayX, O.y + 0.06, O.z);
         this.tgtLook.copy(trayCenter);
-        this.tgtPos.set(trayCenter.x, trayCenter.y + 0.95, trayCenter.z + 0.75);
+        this.tgtPos.set(trayCenter.x, trayCenter.y + 0.92, trayCenter.z + 0.76);
         this.tgtFov = 38;
       } else if (mode === 'orbit') {
         const o = this.ludoOrbit;
@@ -1973,10 +2071,10 @@ export class ClubWorld {
         this.tgtFov = 42;
         this.camK = 8;
       } else {
-        // Default board view centered on table
-        const boardCenter = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2, O.y + 0.05, O.z);
+        // Default board + dice tray framing centered cleanly across both non-overlapping zones
+        const boardCenter = new THREE.Vector3(O.x + (L.boardX + L.trayX) / 2 - 0.03, O.y + 0.04, O.z);
         this.tgtLook.copy(boardCenter);
-        this.tgtPos.set(boardCenter.x + 0.25, boardCenter.y + 1.6, boardCenter.z + 1.35);
+        this.tgtPos.set(boardCenter.x + 0.04, boardCenter.y + 1.48, boardCenter.z + 1.18);
         this.tgtFov = 38;
       }
       return;
@@ -2012,7 +2110,7 @@ export class ClubWorld {
       }
       // Overhead angled billiard framing
       this.tgtLook.set(O.x, O.y, O.z);
-      this.tgtPos.set(O.x, O.y + 1.95, O.z + 1.15);
+      this.tgtPos.set(O.x, O.y + 1.92, O.z + 1.12);
       this.tgtFov = 44;
       this.camK = 4.5;
       return;
@@ -2068,8 +2166,9 @@ export class ClubWorld {
     appMode: 'title' | 'lounge' | 'station' | 'paused' | 'gameover',
     station: StationId,
     poolCue: { yaw: number; lowSight: boolean } = { yaw: 0, lowSight: false },
+    isImmersedPlay = false,
   ): void {
-    this.computeCameraShot(appMode, station, poolCue, null, false);
+    this.computeCameraShot(appMode, station, poolCue, null, false, isImmersedPlay);
     this.camPos.copy(this.tgtPos);
     this.camLook.copy(this.tgtLook);
     this.camFov = this.tgtFov;
@@ -2119,9 +2218,10 @@ export class ClubWorld {
     poolCloseUp: { pocketIdx: number; ballId: number } | null,
     closeUpEnabled: boolean,
     remoteAvatar: { active: boolean; x: number; z: number; yaw: number },
+    isImmersedPlay = false,
   ): void {
     this.time += dt;
-    this.computeCameraShot(appMode, station, poolCue, poolCloseUp, closeUpEnabled);
+    this.computeCameraShot(appMode, station, poolCue, poolCloseUp, closeUpEnabled, isImmersedPlay);
 
     const a = 1 - Math.exp(-dt * this.camK);
     this.camPos.lerp(this.tgtPos, a);
@@ -2153,14 +2253,14 @@ export class ClubWorld {
     }
 
     // Remote P2P guest avatar
-    this.guestGrp.visible = remoteAvatar.active;
+    this.guestGrp.visible = !isImmersedPlay && remoteAvatar.active;
     if (remoteAvatar.active) {
       this.guestGrp.position.x += (remoteAvatar.x - this.guestGrp.position.x) * 0.2;
       this.guestGrp.position.z += (remoteAvatar.z - this.guestGrp.position.z) * 0.2;
       this.guestGrp.rotation.y = remoteAvatar.yaw;
     }
 
-    // Ludo animations
+    // Ludo animations + 3D Shaker Cup Vigorous Shake & Throw-Out
     this._applyLudoPawns(dt);
     this.ludoHints.forEach((h, i) => {
       if (h.visible) {
@@ -2172,56 +2272,102 @@ export class ClubWorld {
       this.ludoFeltMat.color.lerp(this.ludoFeltTarget, 1 - Math.exp(-dt * 4));
     }
 
-    // Fireplace flicker + rising embers
-    this.fireLight.intensity = 13 + Math.sin(this.time * 14) * 2.2 + Math.cos(this.time * 23) * 1.4;
-    const dummy = new THREE.Object3D();
-    this.emberData.forEach((em, idx) => {
-      em.y += em.vy * dt;
-      const inFire = idx < 18;
-      if (inFire && em.y > 1.35) em.y = 0.25;
-      if (!inFire && em.y > 3.2) em.y = 1.0;
-      dummy.position.set(
-        em.x + Math.sin(this.time * 2 + em.phase) * 0.04,
-        em.y,
-        em.z + Math.cos(this.time * 2 + em.phase) * 0.04,
-      );
-      dummy.updateMatrix();
-      this.emberInstanced.setMatrixAt(idx, dummy.matrix);
-    });
-    this.emberInstanced.instanceMatrix.needsUpdate = true;
+    if (this.ludoCupGroup) {
+      const snap = this.lastDieSnap;
+      const isShaking = this.ludoManualShake.active || snap?.phase === 'shaking';
+      const isThrowingOut =
+        !this.ludoManualShake.active &&
+        snap?.phase === 'rolling' &&
+        (snap.throwElapsed ?? 1) < 0.36;
 
-    // NPC ambient animations (dart tosses, pool cue swings, bar cheers)
-    this.npcs.forEach((npc, idx) => {
-      if (npc.role === 'darts' && station !== 'darts') {
-        const swing = Math.sin(this.time * 2.4 + idx);
-        npc.armR.rotation.x = -0.6 + swing * 0.45;
-      } else if (npc.role === 'pool' && station !== 'pool') {
-        npc.armR.rotation.x = Math.sin(this.time * 1.8 + idx) * 0.25;
+      if (isShaking) {
+        const pwr = this.ludoManualShake.active
+          ? 0.55 + this.ludoManualShake.power * 0.65
+          : 0.75 + (snap?.shakeProgress ?? 0.5) * 0.45;
+        const sx = Math.sin(this.time * 54) * 0.044 * pwr;
+        const sy = Math.abs(Math.cos(this.time * 66)) * 0.052 * pwr;
+        const sz = Math.sin(this.time * 46) * 0.036 * pwr;
+        this.ludoCupGroup.position.set(sx, 0.195 + sy, TRAY.z1 + 0.015 + sz);
+        this.ludoCupGroup.rotation.set(
+          0.35 + Math.cos(this.time * 58) * 0.42 * pwr,
+          Math.sin(this.time * 38) * 0.25,
+          Math.sin(this.time * 50) * 0.48 * pwr,
+        );
+      } else if (isThrowingOut) {
+        // Tilt cup sharply forward into the tray mouth as the die shoots out
+        const ck = 1 - Math.exp(-dt * 24);
+        this.ludoCupGroup.position.x += (0 - this.ludoCupGroup.position.x) * ck;
+        this.ludoCupGroup.position.y += (0.145 - this.ludoCupGroup.position.y) * ck;
+        this.ludoCupGroup.position.z += (TRAY.z1 - 0.01 - this.ludoCupGroup.position.z) * ck;
+        this.ludoCupGroup.rotation.x += (-1.38 - this.ludoCupGroup.rotation.x) * ck;
+        this.ludoCupGroup.rotation.y *= 1 - ck;
+        this.ludoCupGroup.rotation.z *= 1 - ck;
       } else {
-        npc.armR.rotation.x = Math.sin(this.time * 1.5 + idx) * 0.12;
+        // Rest cleanly on the corner rail of the dice tray
+        const ck = 1 - Math.exp(-dt * 10);
+        this.ludoCupGroup.position.x += (0.145 - this.ludoCupGroup.position.x) * ck;
+        this.ludoCupGroup.position.y += (0.074 - this.ludoCupGroup.position.y) * ck;
+        this.ludoCupGroup.position.z += (TRAY.z1 + 0.048 - this.ludoCupGroup.position.z) * ck;
+        this.ludoCupGroup.rotation.x *= 1 - ck;
+        this.ludoCupGroup.rotation.y *= 1 - ck;
+        this.ludoCupGroup.rotation.z *= 1 - ck;
       }
-    });
-
-    // Background NPC flying dart loop when player is not at dartboard
-    if (station !== 'darts') {
-      this.npcFlyDart.visible = true;
-      const cyc = (this.time * 0.75) % 1;
-      this.npcFlyDart.position.set(
-        0.15 * (1 - cyc),
-        Math.sin(cyc * Math.PI) * 0.12,
-        1.65 * (1 - cyc) + 0.06,
-      );
-    } else {
-      this.npcFlyDart.visible = false;
     }
 
-    // Update animated CRT arcade screens at ~8 Hz
-    this.arcadeTick += dt;
-    if (Math.floor(this.arcadeTick * 8) !== Math.floor((this.arcadeTick - dt) * 8)) {
-      this.arcadeCanvases.forEach((ac, idx) => {
-        drawArcadeScreen(ac.ctx, ac.canvas.width, ac.canvas.height, idx, this.time);
-        ac.tex.needsUpdate = true;
+    if (!isImmersedPlay) {
+      // Fireplace flicker + rising embers
+      this.fireLight.intensity = 13 + Math.sin(this.time * 14) * 2.2 + Math.cos(this.time * 23) * 1.4;
+      const dummy = new THREE.Object3D();
+      this.emberData.forEach((em, idx) => {
+        em.y += em.vy * dt;
+        const inFire = idx < 18;
+        if (inFire && em.y > 1.35) em.y = 0.25;
+        if (!inFire && em.y > 3.2) em.y = 1.0;
+        dummy.position.set(
+          em.x + Math.sin(this.time * 2 + em.phase) * 0.04,
+          em.y,
+          em.z + Math.cos(this.time * 2 + em.phase) * 0.04,
+        );
+        dummy.updateMatrix();
+        this.emberInstanced.setMatrixAt(idx, dummy.matrix);
       });
+      this.emberInstanced.instanceMatrix.needsUpdate = true;
+
+      // NPC ambient animations (dart tosses, pool cue swings, bar cheers)
+      this.npcs.forEach((npc, idx) => {
+        if (npc.role === 'darts' && station !== 'darts') {
+          const swing = Math.sin(this.time * 2.4 + idx);
+          npc.armR.rotation.x = -0.6 + swing * 0.45;
+        } else if (npc.role === 'pool' && station !== 'pool') {
+          npc.armR.rotation.x = Math.sin(this.time * 1.8 + idx) * 0.25;
+        } else {
+          npc.armR.rotation.x = Math.sin(this.time * 1.5 + idx) * 0.12;
+        }
+      });
+
+      // Background NPC flying dart loop when player is not at dartboard
+      if (station !== 'darts') {
+        this.npcFlyDart.visible = true;
+        const cyc = (this.time * 0.75) % 1;
+        this.npcFlyDart.position.set(
+          0.15 * (1 - cyc),
+          Math.sin(cyc * Math.PI) * 0.12,
+          1.65 * (1 - cyc) + 0.06,
+        );
+      } else {
+        this.npcFlyDart.visible = false;
+      }
+
+      // Update animated CRT arcade screens at ~8 Hz
+      this.arcadeTick += dt;
+      if (Math.floor(this.arcadeTick * 8) !== Math.floor((this.arcadeTick - dt) * 8)) {
+        this.arcadeCanvases.forEach((ac, idx) => {
+          drawArcadeScreen(ac.ctx, ac.canvas.width, ac.canvas.height, idx, this.time);
+          ac.tex.needsUpdate = true;
+        });
+      }
+    } else {
+      this.npcFlyDart.visible = false;
     }
 
     if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 2.2);

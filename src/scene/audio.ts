@@ -159,6 +159,18 @@ export class ClubAudio {
     const v = o.gain ?? 1;
     switch (name) {
       // Ludo & Dice sounds (matching Club No.9 Ludo audio.js)
+      case 'cupShake':
+        this._noise(0.055, {
+          gain: 0.24 * v,
+          freq: 1750 + Math.random() * 900,
+          q: 3.2,
+        });
+        this._tone(280 + Math.random() * 140, 0.045, {
+          type: 'triangle',
+          gain: 0.16 * v,
+          slide: -90,
+        });
+        break;
       case 'throw':
         this._noise(0.28, { gain: 0.22 * v, freq: 2600, q: 0.7 });
         for (let i = 0; i < 5; i++) {

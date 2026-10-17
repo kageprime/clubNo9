@@ -98,7 +98,17 @@ test('Rapier3D headless physics: Ludo DieTray, 8-Ball PoolSim, and DiceCupSim', 
     assert.equal(topFace(q).face, face);
   }
   const tray = new DieTray(RAPIER, { seed: 77 });
-  assert.equal(tray.throwDie(0.65), true);
+  assert.equal(tray.throwDie(0.65, 0.42), true);
+  assert.equal(tray.phase, 'shaking');
+  // Step halfway through cup shaking (~0.18s)
+  for (let i = 0; i < 11; i++) tray.step(1 / 60);
+  const shakeSnap = tray.snapshot();
+  assert.equal(shakeSnap.phase, 'shaking');
+  assert.ok((shakeSnap.shakeProgress ?? 0) > 0.35);
+  // Step past shakeDuration so the cup throws the die out into rolling phase
+  for (let i = 0; i < 15; i++) tray.step(1 / 60);
+  const throwSnap = tray.snapshot();
+  assert.equal(throwSnap.phase, 'rolling');
   const rolledFace = tray.run(10);
   assert.ok(rolledFace >= 1 && rolledFace <= 6);
   tray.dispose();
