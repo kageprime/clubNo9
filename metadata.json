@@ -1,0 +1,6 @@
+{
+  "name": "CLUB No.9 · 九号俱乐部",
+  "description": "3D Pixel-Art Isometric Retro Lounge & Tabletop Physics Game Hub featuring Ludo (Club No.9 Edition), 8-Ball Pool, Pixel Darts, Dice Cup, and Peer-to-Peer Multiplayer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

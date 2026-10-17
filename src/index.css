@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+:root {
+  --bg-void: #0a0705;
+  --panel-bg: rgba(18, 22, 40, 0.94);
+  --panel-hi: rgba(29, 36, 66, 0.96);
+  --panel-border: rgba(255, 255, 255, 0.14);
+  --gold: #ffb84a;
+  --cyan: #54e0ee;
+  --pink: #ff5ec4;
+  --green: #5fe08a;
+  --red: #ff6a5a;
+  --text-main: #f1efe6;
+  --text-dim: #8d92a8;
+  --font-display: "Chakra Petch", "Plus Jakarta Sans", "Noto Sans SC", sans-serif;
+  --font-body: "Plus Jakarta Sans", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-void);
+  color: var(--text-main);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.club-panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+}
+
+.club-btn {
+  font-family: var(--font-body);
+  font-weight: 700;
+  color: var(--text-main);
+  background: #252e52;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  cursor: pointer;
+  padding: 8px 14px;
+  box-shadow: 0 3px 0 #0e1226, 0 5px 12px rgba(0, 0, 0, 0.4);
+  transition: transform 0.1s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.club-btn:hover {
+  background: #323e6e;
+  color: #ffffff;
+}
+
+.club-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 #0e1226;
+}
+
+.club-btn-gold {
+  color: #1b1405;
+  background: #ffb84a;
+  border-color: #ffe3a0;
+  box-shadow: 0 4px 0 #9c620c, 0 8px 18px rgba(0, 0, 0, 0.45);
+}
+
+.club-btn-gold:hover {
+  background: #ffc96b;
+  color: #1b1405;
+}
+
+.club-btn-active {
+  color: #0b1622;
+  background: var(--cyan);
+  border-color: #aef4fc;
+  box-shadow: 0 3px 0 #177885;
+}
+
+kbd.club-kbd {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.14);
+  padding: 1px 6px;
+  margin: 0 3px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-bottom-width: 2px;
+}
+
+@keyframes floatBob {
+  from {
+    transform: translate(-50%, -100%) translateY(0px);
+  }
+  to {
+    transform: translate(-50%, -100%) translateY(-5px);
+  }
+}
+
+.pawn-tag {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  color: #1b1405;
+  background: #ffb84a;
+  padding: 2px 9px;
+  border-radius: 8px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.55);
+  animation: floatBob 0.55s ease-in-out infinite alternate;
+  pointer-events: auto;
+  cursor: pointer;
+}
